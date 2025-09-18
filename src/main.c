@@ -3,6 +3,57 @@
 #include <string.h>
 #include "lib/lib.h"
 
+static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) {
+	/* System.Reflection.MethodAttributes subset */
+	const unsigned int MemberAccessMask = 0x0007;
+	const unsigned int MdPrivate = 0x0001;
+	const unsigned int MdFamANDAssem = 0x0002; /* private protected */
+	const unsigned int MdAssembly = 0x0003;    /* internal */
+	const unsigned int MdFamily = 0x0004;      /* protected */
+	const unsigned int MdFamORAssem = 0x0005;  /* protected internal */
+	const unsigned int MdPublic = 0x0006;
+	const unsigned int MdStatic = 0x0010;
+	const unsigned int MdFinal = 0x0020;
+	const unsigned int MdVirtual = 0x0040;
+	const unsigned int MdAbstract = 0x0400;
+	const char *vis = "";
+	switch (flags & MemberAccessMask) {
+	case MdPublic: vis = "public"; break;
+	case MdFamily: vis = "protected"; break;
+	case MdAssembly: vis = "internal"; break;
+	case MdFamORAssem: vis = "protected internal"; break;
+	case MdFamANDAssem: vis = "private protected"; break;
+	case MdPrivate: vis = "private"; break;
+	default: vis = ""; break;
+	}
+	char tmp[128]; tmp[0] = 0;
+	if (*vis) {
+		strncat (tmp, vis, sizeof (tmp) - 1);
+	}
+	if (flags & MdStatic) {
+		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
+		strncat (tmp, "static", sizeof (tmp) - 1);
+	}
+	if (flags & MdAbstract) {
+		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
+		strncat (tmp, "abstract", sizeof (tmp) - 1);
+	}
+	if (flags & MdVirtual) {
+		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
+		strncat (tmp, "virtual", sizeof (tmp) - 1);
+	}
+	if (flags & MdFinal) {
+		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
+		strncat (tmp, "final", sizeof (tmp) - 1);
+	}
+	if (!*tmp) {
+		strncpy (o, "", osz);
+	} else {
+		strncpy (o, tmp, osz);
+		o[osz? osz - 1: 0] = 0;
+	}
+}
+
 static void print_usage (const char *prog_name) {
 	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--fast] [--gmp-addr 0xADDR] [--gmp-count N] [-v|--debug] <executable> <path/to/global-metadata.dat>\n", prog_name);
 }
@@ -91,22 +142,13 @@ int main (int argc, char *argv[]) {
 		ut32 m = (ut32)magic[0] | ((ut32)magic[1] << 8) | ((ut32)magic[2] << 16) | ((ut32)magic[3] << 24);
 		if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
 			has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
-			if (!has_ptrs) {
-				/* Fallback to r2-based */
-				has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
-			}
 		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
 			has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
-			if (!has_ptrs) {
-				/* Fallback to r2-based */
-				has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
-			}
 		} else {
-			/* Fallback to r2-based */
-			has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
+			has_ptrs = false;
 		}
 	} else {
-		has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
+		has_ptrs = false;
 	}
 	// Recompute has_ptrs by checking any non-zero entry
 	if (method_ptrs) {
@@ -192,15 +234,28 @@ int main (int argc, char *argv[]) {
 									char *im = (char *) r2unity_get_string (meta, images[ii].nameIndex);
 									if (im && *im) {
 									printf ("'@0x%"PFMT64x"'f sym.unity.%s.%s\n", addr, im, fullname);
-									printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s\n", addr, im, fullname);
+									char attrs[128]; attrs[0] = 0; build_method_attrs_string (attrs, sizeof (attrs), m->flags);
+									if (*attrs) {
+										printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s %s\n", addr, im, attrs, fullname);
+									} else {
+										printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s\n", addr, im, fullname);
+									}
 										free (im);
 									} else {
 									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-									printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+									char attrs2[128]; attrs2[0] = 0; build_method_attrs_string (attrs2, sizeof (attrs2), m->flags);
+									if (*attrs2) {
+										printf ("'@0x%"PFMT64x"'CCu Method: %s %s\n", addr, attrs2, fullname);
+									} else {
+										printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+									}
 									}
 								} else {
 									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-									printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+									char attrs3[128]; attrs3[0] = 0; build_method_attrs_string (attrs3, sizeof (attrs3), m->flags);
+									if (*attrs3) {
+										printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, attrs3);
+									}
 								}
 							} else {
 							printf ("# %s\n", fullname);

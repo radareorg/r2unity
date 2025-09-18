@@ -168,6 +168,44 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 	bool found = false;
 	int ptrsz = 8;
 	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
+    // Try CodeRegistration-like pairs first
+    for (int i = 0; i < mo.nsegs && !found; i++) {
+        MachSeg *s = &mo.segs[i];
+        bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
+        if (!is_data || s->filesize < (16 + 8)) continue;
+        const ut8 *buf = mo.file + mo.base + s->fileoff;
+        ut64 sz = s->filesize;
+        for (ut64 off = 0; off + 16 <= sz; off += 4) {
+            ut32 cnt1 = RD_LE32 (buf + off);
+            ut64 p1 = RD_LE64 (buf + off + 8);
+            if (cnt1 < 32) continue;
+            ut32 good = 0, seen = 0;
+            ut32 sample = R_MIN ((ut32)128, cnt1);
+            for (ut32 k = 0; k < sample; k++) {
+                const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)k * 8);
+                if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)k * 8); }
+                if (!p) break;
+                ut64 val = RD_LE64 (p);
+                if (val) seen++;
+                if (val < text_lo && mo.vm_base) val += mo.vm_base;
+                if (val >= text_lo && val < text_hi) good++;
+            }
+            if (seen >= 8 && good >= 8) {
+                if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/macho] codeReg p1=0x%"PFMT64x" cnt1=%u\n", p1, cnt1);
+                memset (candidates, 0, method_count * sizeof (ut64));
+                for (size_t m = 0; m < method_count && m < cnt1; m++) {
+                    const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)m * 8);
+                    if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)m * 8); }
+                    if (!p) break;
+                    ut64 val = RD_LE64 (p);
+                    if (val < text_lo && mo.vm_base) val += mo.vm_base;
+                    if (val >= text_lo && val < text_hi) candidates[m] = val;
+                }
+                found = true;
+                break;
+            }
+        }
+    }
     for (int i = 0; i < mo.nsegs && !found; i++) {
         MachSeg *s = &mo.segs[i];
         bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);

@@ -2,8 +2,8 @@
 
 # Compiler and flags
 CC = gcc
-CFLAGS = -Wall -Wextra -g -I./third_party/radare2/libr/include $(shell pkg-config --cflags r_core r_util 2>/dev/null || echo "")
-LDFLAGS = $(shell pkg-config --libs r_core r_util 2>/dev/null || echo "")
+CFLAGS = -Wall -Wextra -g -I./third_party/radare2/libr/include $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
+LDFLAGS = $(shell pkg-config --libs r_util 2>/dev/null || echo "")
 
 # Project name
 EXEC = r2unity
