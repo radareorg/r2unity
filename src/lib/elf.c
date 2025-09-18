@@ -114,7 +114,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	*out_ptrs = NULL;
 	ElfImg e;
 	if (!elf_load (elf_path, &e)) return false;
-	size_t method_count = meta->header.v24.methodsSize / sizeof (Il2CppMethodDefinition);
+	size_t method_count = (ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition);
 	if (!method_count) { elf_free (&e); return false; }
 	ut64 base_vaddr = UT64_MAX, text_lo = UT64_MAX, text_hi = 0;
 	for (int i = 0; i < e.nsegs; i++) {
@@ -158,7 +158,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027) || (type == 8);
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
-			ut64 newv = base + r_addend;
+			ut64 newv = r_addend;
 			if (e.is64) { for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 			else { ut32 v32 = (ut32) newv; for (int b = 0; b < 4; b++) loc[b] = (ut8)((v32 >> (8*b)) & 0xff); }
 		}
@@ -173,7 +173,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
 			ut64 add = e.is64 ? RD_LE64 (loc) : (ut64) RD_LE32 (loc);
-			ut64 newv = base + add;
+			ut64 newv = add;
 			if (e.is64) { for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 			else { ut32 v32 = (ut32) newv; for (int b = 0; b < 4; b++) loc[b] = (ut8)((v32 >> (8*b)) & 0xff); }
 		}
@@ -185,21 +185,24 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			ut64 R = RD_LE64 (rp);
 			if ((R & 1ULL) == 0) {
 				ut64 addr = R; ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr);
-				if (loc) { ut64 add = RD_LE64 (loc); ut64 newv = base + add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
+				if (loc) { ut64 add = RD_LE64 (loc); ut64 newv = add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 				curr = addr + 8;
 			} else {
 				ut64 bitmap = R >> 1;
 				for (int bit = 0; bit < 63; bit++) if (bitmap & (1ULL << bit)) {
 					ut64 addr = curr + (ut64)(bit + 1) * 8ULL;
 					ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr); if (!loc) continue;
-					ut64 add = RD_LE64 (loc); ut64 newv = base + add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
+					ut64 add = RD_LE64 (loc); ut64 newv = add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
 				}
 				curr += 8ULL * 63ULL;
 			}
 		}
 	}
 	// Scan for [count][ptr]
-	ut32 expected = (ut32) (meta->header.v24.methodsSize / 32);
+	/* expected number of entries in a possible method pointer array
+	 * use method_count computed earlier (methodsSize / sizeof(Il2CppMethodDefinition))
+	 */
+	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
 	for (int i = 0; i < e.nsegs && !found; i++) {
 		const ElfSeg *s = &e.segs[i];
 		bool is_data = (s->flags & 0x1) && !(s->flags & 0x4);
@@ -209,7 +212,9 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 		for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
 			ut32 cnt32 = RD_LE32 (buf + off);
 			if (cnt32 == 0) continue;
-			if (expected) { if (cnt32 < expected / 4 || cnt32 > expected * 2) continue; } else { if (cnt32 < 64) continue; }
+			/* relax thresholds: accept arrays that are reasonably large compared to expected */
+				if (cnt32 < 32) continue;
+				if (expected && (cnt32 > expected * 10 || cnt32 < expected / 8)) continue;
 			ut64 arrptr = (ptrsz == 8) ? RD_LE64 (buf + off + 8) : (ut64) RD_LE32 (buf + off + 4);
 			ut32 good = 0, seen = 0;
 			ut32 sample = R_MIN ((ut32)128, cnt32);

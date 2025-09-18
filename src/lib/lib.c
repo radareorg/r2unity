@@ -64,8 +64,37 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		return NULL;
 	}
 	meta->buf = buf;
-	meta->strings = r_buf_new_slice (buf, meta->header.v24.stringOffset, meta->header.v24.stringSize);
-	meta->string_literals = r_buf_new_slice (buf, meta->header.v24.stringLiteralOffset, meta->header.v24.stringLiteralSize);
+	/* Normalize header fields depending on version to simplify later access */
+	if (meta->version < 27) {
+		meta->stringOffset = meta->header.v24.stringOffset;
+		meta->stringSize = meta->header.v24.stringSize;
+		meta->stringLiteralOffset = meta->header.v24.stringLiteralOffset;
+		meta->stringLiteralSize = meta->header.v24.stringLiteralSize;
+		meta->methodsOffset = meta->header.v24.methodsOffset;
+		meta->methodsSize = meta->header.v24.methodsSize;
+		meta->typeDefinitionsOffset = meta->header.v24.typeDefinitionsOffset;
+		meta->typeDefinitionsSize = meta->header.v24.typeDefinitionsSize;
+	} else if (meta->version < 29) {
+		meta->stringOffset = meta->header.v27.stringOffset;
+		meta->stringSize = meta->header.v27.stringSize;
+		meta->stringLiteralOffset = meta->header.v27.stringLiteralOffset;
+		meta->stringLiteralSize = meta->header.v27.stringLiteralSize;
+		meta->methodsOffset = meta->header.v27.methodsOffset;
+		meta->methodsSize = meta->header.v27.methodsSize;
+		meta->typeDefinitionsOffset = meta->header.v27.typeDefinitionsOffset;
+		meta->typeDefinitionsSize = meta->header.v27.typeDefinitionsSize;
+	} else {
+		meta->stringOffset = meta->header.v29.stringOffset;
+		meta->stringSize = meta->header.v29.stringSize;
+		meta->stringLiteralOffset = meta->header.v29.stringLiteralOffset;
+		meta->stringLiteralSize = meta->header.v29.stringLiteralSize;
+		meta->methodsOffset = meta->header.v29.methodsOffset;
+		meta->methodsSize = meta->header.v29.methodsSize;
+		meta->typeDefinitionsOffset = meta->header.v29.typeDefinitionsOffset;
+		meta->typeDefinitionsSize = meta->header.v29.typeDefinitionsSize;
+	}
+	meta->strings = r_buf_new_slice (buf, meta->stringOffset, meta->stringSize);
+	meta->string_literals = r_buf_new_slice (buf, meta->stringLiteralOffset, meta->stringLiteralSize);
 	return meta;
 }
 
@@ -113,7 +142,7 @@ R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta,
 	}
 	// On-disk Il2CppTypeDefinition is 88 bytes for v24+ (little-endian)
 	const ut64 entry = 88;
-	ut64 tsize = (ut64) meta->header.v24.typeDefinitionsSize;
+	ut64 tsize = (ut64) (ut64) meta->typeDefinitionsSize;
 	if (tsize < entry) {
 		*count = 0;
 		return NULL;
@@ -128,7 +157,7 @@ R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta,
 		R_FREE (types);
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, meta->header.v24.typeDefinitionsOffset, buf, tsize) != (st64) tsize) {
+	if (r_buf_read_at (meta->buf, meta->typeDefinitionsOffset, buf, tsize) != (st64) tsize) {
 		R_FREE (buf);
 		R_FREE (types);
 		return NULL;
@@ -172,21 +201,21 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 	}
 	// On-disk Il2CppMethodDefinition is 32 bytes (little-endian)
 	const ut64 entry = 32;
-	if ((ut64) meta->header.v24.methodsSize < entry) {
+	if ((ut64) (ut64) meta->methodsSize < entry) {
 		*count = 0;
 		return NULL;
 	}
-	*count = meta->header.v24.methodsSize / entry;
+	*count = (ut64) meta->methodsSize / entry;
 	Il2CppMethodDefinition *methods = R_NEWS (Il2CppMethodDefinition, *count);
 	if (!methods) {
 		return NULL;
 	}
-	ut8 *buf = R_NEWS (ut8, meta->header.v24.methodsSize);
+	ut8 *buf = R_NEWS (ut8, (ut64) meta->methodsSize);
 	if (!buf) {
 		R_FREE (methods);
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, meta->header.v24.methodsOffset, buf, meta->header.v24.methodsSize) != meta->header.v24.methodsSize) {
+	if (r_buf_read_at (meta->buf, meta->methodsOffset, buf, (ut64) meta->methodsSize) != (ut64) meta->methodsSize) {
 		R_FREE (buf);
 		R_FREE (methods);
 		return NULL;
@@ -278,7 +307,7 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
 		r_core_free (core);
 		return false;
 	}
-	size_t method_count = meta->header.v24.methodsSize / sizeof (Il2CppMethodDefinition);
+	size_t method_count = (ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition);
 	if (!method_count) {
 		r_core_free (core);
 		return false;
@@ -512,7 +541,7 @@ R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *e
 		}
 		free (ij);
 	}
-	size_t method_count = meta->header.v24.methodsSize / sizeof (Il2CppMethodDefinition);
+	size_t method_count = (ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition);
 	if (!method_count) {
 		r_core_free (core);
 		return false;

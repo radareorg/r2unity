@@ -145,9 +145,15 @@ int main (int argc, char *argv[]) {
 				if (has_ptrs && method_ptrs) {
 					size_t idx = j;
 					if (mp_shift) {
-						idx = (j + mp_shift) % (method_count? method_count: 1);
+						idx = j + mp_shift;
+						if (idx >= method_count) {
+							addr = 0;
+						} else {
+							addr = method_ptrs[idx];
+						}
+					} else {
+						addr = method_ptrs[idx];
 					}
-					addr = method_ptrs[idx];
 				}
 				if (limit < 0 || printed < limit) {
 #if 0

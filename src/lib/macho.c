@@ -27,6 +27,7 @@ typedef struct {
 
 typedef struct {
 	ut8 *file;
+	ut64 vm_base; // lowest VM address among segments (usually __TEXT vmaddr)
 	ut64 filesize;
 	ut64 base;
 	ut32 ncmds;
@@ -93,6 +94,9 @@ static bool macho_load (const char *path, MachO *mo) {
 				s->fileoff = RD_LE64 (sp + 32);
 				s->filesize = RD_LE64 (sp + 40);
 				s->maxprot = RD_LE32 (sp + 48);
+				if (!mo->vm_base || s->vmaddr < mo->vm_base) {
+					mo->vm_base = s->vmaddr;
+				}
 			}
 		}
 		co += cmdsize ? cmdsize : 8;
@@ -140,7 +144,7 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 	if (!macho_load (macho_path, &mo)) {
 		return false;
 	}
-	size_t method_count = meta->header.v24.methodsSize / sizeof (Il2CppMethodDefinition);
+	size_t method_count = (ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition);
 	if (!method_count) {
 		macho_free (&mo);
 		return false;
@@ -154,6 +158,7 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 	}
 	bool found = false;
 	int ptrsz = 8;
+	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
     for (int i = 0; i < mo.nsegs && !found; i++) {
         MachSeg *s = &mo.segs[i];
 		bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
@@ -162,14 +167,18 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 		ut64 sz = s->filesize;
 		for (ut64 off = 0; off + 16 <= sz; off += 4) {
 			ut32 cnt32 = RD_LE32 (buf + off);
-			if (cnt32 < 1024 || cnt32 > (ut32)(method_count * 2)) continue;
+			/* relax thresholds to catch more candidates */
+			if (cnt32 < 32) continue;
+			if (expected && (cnt32 > expected * 10 || cnt32 < expected / 8)) continue;
 			ut64 arrptr = RD_LE64 (buf + off + 8);
 			ut32 good = 0, seen = 0;
 			ut32 sample = R_MIN ((ut32)128, cnt32);
 			for (ut32 k = 0; k < sample; k++) {
 				const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)k * (ut64)ptrsz);
+				if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)k * (ut64)ptrsz); }
 				if (!p) break;
 				ut64 val = RD_LE64 (p);
+				if (val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) { val += mo.vm_base; }
 				if (val) seen++;
 				if (val >= text_lo && val < text_hi) good++;
 			}
@@ -177,8 +186,10 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 				memset (candidates, 0, method_count * sizeof (ut64));
 				for (size_t m = 0; m < method_count && m < cnt32; m++) {
 					const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)m * (ut64)ptrsz);
+					if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)m * (ut64)ptrsz); }
 					if (!p) break;
 					ut64 val = RD_LE64 (p);
+					if (val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) { val += mo.vm_base; }
 					if (val >= text_lo && val < text_hi) candidates[m] = val;
 				}
 				found = true;

@@ -224,6 +224,15 @@ typedef struct {
 	RBuffer *buf;
 	RBuffer *strings;
 	RBuffer *string_literals;
+	/* Normalized header fields for easy access across versions */
+	uint32_t stringOffset;
+	int32_t stringSize;
+	uint32_t stringLiteralOffset;
+	int32_t stringLiteralSize;
+	uint32_t methodsOffset;
+	int32_t methodsSize;
+	uint32_t typeDefinitionsOffset;
+	int32_t typeDefinitionsSize;
 } R2UnityMetadata;
 
 typedef struct {
