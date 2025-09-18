@@ -136,7 +136,6 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	ut64 rela_off = 0, rela_sz = 0, rela_ent = e.is64? 24: 12;
 	ut64 rel_off = 0, rel_sz = 0, rel_ent = e.is64? 16: 8;
 	ut64 relr_off = 0, relr_sz = 0, relr_ent = e.is64? 8: 4;
-	ut64 base = base_vaddr;
 	if (dyn_off && dyn_sz) {
 		const ut8 *d = e.file + dyn_off;
 		for (ut64 off = 0; off + (e.is64? 16: 8) <= dyn_sz; off += (e.is64? 16: 8)) {
@@ -216,7 +215,6 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
             ut32 cnt1 = RD_LE32 (buf + off + 0);
             ut64 p1 = (ptrsz == 8)? RD_LE64 (buf + off + 8): (ut64) RD_LE32 (buf + off + 4);
             ut32 cnt2 = RD_LE32 (buf + off + (ut64)(8 + ptrsz));
-            ut64 p2 = (ptrsz == 8)? RD_LE64 (buf + off + (ut64)(8 + ptrsz) + 8): (ut64) RD_LE32 (buf + off + (ut64)(8 + ptrsz) + 4);
             if (cnt1 < 32 || cnt2 < 16) continue;
             // Sample method array
             ut32 good = 0, seen = 0;

@@ -2,13 +2,8 @@
 #include <r_util.h>
 #include <r_util/r_buf.h>
 #undef RD_LE32
-#undef RD_LE64
 static inline ut32 RD_LE32 (const ut8 *p) {
 	return ((ut32)p[0]) | ((ut32)p[1] << 8) | ((ut32)p[2] << 16) | ((ut32)p[3] << 24);
-}
-static inline ut64 RD_LE64 (const ut8 *p) {
-	return ((ut64)p[0]) | ((ut64)p[1] << 8) | ((ut64)p[2] << 16) | ((ut64)p[3] << 24) |
-		((ut64)p[4] << 32) | ((ut64)p[5] << 40) | ((ut64)p[6] << 48) | ((ut64)p[7] << 56);
 }
 static inline ut16 RD_LE16 (const ut8 *p) {
 	return (ut16)((ut16)p[0] | ((ut16)p[1] << 8));
@@ -232,7 +227,7 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 		R_FREE (methods);
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, meta->methodsOffset, buf, (ut64) meta->methodsSize) != (ut64) meta->methodsSize) {
+	if (r_buf_read_at (meta->buf, meta->methodsOffset, buf, (ut64) meta->methodsSize) != (st64) meta->methodsSize) {
 		R_FREE (buf);
 		R_FREE (methods);
 		return NULL;
