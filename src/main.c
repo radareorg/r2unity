@@ -4,7 +4,7 @@
 #include "lib/lib.h"
 
 static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--macho-fast] [--elf-fast] [--gmp-addr 0xADDR] [--gmp-count N] <executable> <path/to/global-metadata.dat>\n", prog_name);
+	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--fast] [--gmp-addr 0xADDR] [--gmp-count N] <executable> <path/to/global-metadata.dat>\n", prog_name);
 }
 
 int main (int argc, char *argv[]) {
@@ -13,8 +13,7 @@ int main (int argc, char *argv[]) {
 	long limit = -1;
 	ut64 gmp_addr = 0;
 	size_t gmp_count = 0;
-	bool macho_fast = false;
-	bool elf_fast = false;
+	bool fast = false;
 	int i = 1;
 	for (; i < argc; i++) {
 		if (!strcmp (argv[i], "--json-one-line")) {
@@ -25,12 +24,8 @@ int main (int argc, char *argv[]) {
 			quiet = true;
 			continue;
 		}
-		if (!strcmp (argv[i], "--macho-fast")) {
-			macho_fast = true;
-			continue;
-		}
-		if (!strcmp (argv[i], "--elf-fast")) {
-			elf_fast = true;
+		if (!strcmp (argv[i], "--fast")) {
+			fast = true;
 			continue;
 		}
 		if (!strcmp (argv[i], "-l") && i + 1 < argc) {
@@ -78,10 +73,23 @@ int main (int argc, char *argv[]) {
 	bool has_ptrs = false;
 	if (gmp_addr) {
 		has_ptrs = r2unity_read_method_pointers_at (meta, exe_path, gmp_addr, gmp_count, &method_ptrs);
-	} else if (macho_fast) {
-		has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
-	} else if (elf_fast) {
-		has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
+	} else if (fast) {
+		/* Auto-detect file type by magic */
+		unsigned char magic[4] = {0};
+		FILE *fp = fopen (exe_path, "rb");
+		if (fp) {
+			(void)fread (magic, 1, 4, fp);
+			fclose (fp);
+		}
+		ut32 m = (ut32)magic[0] | ((ut32)magic[1] << 8) | ((ut32)magic[2] << 16) | ((ut32)magic[3] << 24);
+		if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
+			has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
+		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
+			has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
+		} else {
+			/* Fallback to r2-based */
+			has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
+		}
 	} else {
 		has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
 	}
