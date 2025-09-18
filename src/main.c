@@ -4,12 +4,13 @@
 #include "lib/lib.h"
 
 static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--fast] [--gmp-addr 0xADDR] [--gmp-count N] <executable> <path/to/global-metadata.dat>\n", prog_name);
+	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--fast] [--gmp-addr 0xADDR] [--gmp-count N] [-v|--debug] <executable> <path/to/global-metadata.dat>\n", prog_name);
 }
 
 int main (int argc, char *argv[]) {
 	bool json_one_line = false;
 	bool quiet = false;
+	bool debug = false;
 	long limit = -1;
 	ut64 gmp_addr = 0;
 	size_t gmp_count = 0;
@@ -26,6 +27,10 @@ int main (int argc, char *argv[]) {
 		}
 		if (!strcmp (argv[i], "--fast")) {
 			fast = true;
+			continue;
+		}
+		if (!strcmp (argv[i], "-v") || !strcmp (argv[i], "--debug")) {
+			debug = true;
 			continue;
 		}
 		if (!strcmp (argv[i], "-l") && i + 1 < argc) {
@@ -57,6 +62,8 @@ int main (int argc, char *argv[]) {
 	}
 
 	R2UnityMetadata *meta = r2unity_parse_metadata (buf);
+	/* configure debug */
+	r2unity_set_debug (debug);
 	if (!meta) {
 		fprintf (stderr, "Failed to parse metadata\n");
 		r_buf_free (buf);
@@ -84,8 +91,16 @@ int main (int argc, char *argv[]) {
 		ut32 m = (ut32)magic[0] | ((ut32)magic[1] << 8) | ((ut32)magic[2] << 16) | ((ut32)magic[3] << 24);
 		if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
 			has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
+			if (!has_ptrs) {
+				/* Fallback to r2-based */
+				has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
+			}
 		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
 			has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
+			if (!has_ptrs) {
+				/* Fallback to r2-based */
+				has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
+			}
 		} else {
 			/* Fallback to r2-based */
 			has_ptrs = r2unity_find_method_pointers (meta, exe_path, &method_ptrs);
@@ -104,7 +119,12 @@ int main (int argc, char *argv[]) {
 		// Output a single stable JSON line
 		printf ("{\"ok\":true,\"version\":%d,\"types\":%u,\"methods\":%u,\"has_ptrs\":%s}\n",
 			meta->version, (unsigned)type_count, (unsigned)method_count, has_ptrs? "true": "false");
-		goto beach;
+		R_FREE (method_ptrs);
+		R_FREE (methods);
+		R_FREE (types);
+		r2unity_free_metadata (meta);
+		r_buf_free (buf);
+		return 0;
 	}
 
 	if (!quiet) {
@@ -113,13 +133,28 @@ int main (int argc, char *argv[]) {
 	}
 
 	long printed = 0;
-	// If we have pointers but leading entries are zero, shift to the first non-zero
+	// Keep 1:1 mapping between method index and pointer index.
+	// Do NOT shift, gaps (zeros) are expected for abstract/generic/external methods.
 	size_t mp_shift = 0;
-	if (has_ptrs && method_ptrs) {
-		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k] != 0) { mp_shift = k; break; }
+	// Optionally enrich names with image/module prefix
+	size_t img_count = 0;
+	Il2CppImageDefinition *images = NULL;
+	int *type2img = NULL;
+	images = r2unity_get_images (meta, &img_count);
+	if (images && type_count > 0) {
+		type2img = R_NEWS (int, type_count);
+		for (size_t ti = 0; ti < type_count; ti++) type2img[ti] = -1;
+		for (size_t ii = 0; ii < img_count; ii++) {
+			int start = images[ii].typeStart;
+			int count = (int) images[ii].typeCount;
+			if (start >= 0 && count > 0) {
+				for (int k = 0; k < count && (size_t)(start + k) < type_count; k++) {
+					type2img[start + k] = (int) ii;
+				}
+			}
 		}
 	}
+
 	// Print methods first, then types, to ensure RVAs are shown in limited output
 	if (methods && types && (limit < 0 || printed < limit)) {
 		for (size_t j = 0; j < method_count; j++) {
@@ -143,39 +178,42 @@ int main (int argc, char *argv[]) {
 				}
 				ut64 addr = 0;
 				if (has_ptrs && method_ptrs) {
-					size_t idx = j;
-					if (mp_shift) {
-						idx = j + mp_shift;
-						if (idx >= method_count) {
-							addr = 0;
-						} else {
-							addr = method_ptrs[idx];
-						}
-					} else {
+					size_t idx = j + mp_shift;
+					if (idx < method_count) {
 						addr = method_ptrs[idx];
 					}
 				}
-				if (limit < 0 || printed < limit) {
-#if 0
-					printf ("f %s @ 0x%"PFMT64x"\n", fullname, addr);
-					printf ("CCu Method: %s @ 0x%"PFMT64x"\n", fullname, addr);
-#else
-					if (addr > 0x1000) {
-						r_name_filter (fullname, -1);
-						printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-						printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
-					} else {
-						printf ("# %s\n", fullname);
+					if (limit < 0 || printed < limit) {
+						if (addr > 0x1000) {
+							r_name_filter (fullname, -1);
+							if (type2img && td) {
+								int ii = type2img[m->declaringType];
+								if (ii >= 0 && (size_t)ii < img_count) {
+									char *im = (char *) r2unity_get_string (meta, images[ii].nameIndex);
+									if (im && *im) {
+									printf ("'@0x%"PFMT64x"'f sym.unity.%s.%s\n", addr, im, fullname);
+									printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s\n", addr, im, fullname);
+										free (im);
+									} else {
+									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+									printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+									}
+								} else {
+									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+									printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+								}
+							} else {
+							printf ("# %s\n", fullname);
+						}
+						printed++;
 					}
-#endif
-					printed++;
-				}
 			}
 			free (ns);
 			free (tn);
 			free (mn);
 			if (limit >= 0 && printed >= limit) {
 				break;
+			}
 			}
 		}
 	}
@@ -185,17 +223,9 @@ int main (int argc, char *argv[]) {
 			char *type_name = (char *) r2unity_get_string (meta, types[j].nameIndex);
 			char *namespace_name = (char *) r2unity_get_string (meta, types[j].namespaceIndex);
 			if (type_name) {
-				if (limit < 0 || printed < limit) {
-#if 0
-					if (R_STR_ISNOTEMPTY (namespace_name)) {
-						printf ("f %s.%s @ 0x0\n", namespace_name, type_name);
-					} else {
-						printf ("f %s @ 0x0\n", type_name);
+					if (limit < 0 || printed < limit) {
+						printed++;
 					}
-#else
-#endif
-					printed++;
-				}
 			}
 			free (type_name);
 			free (namespace_name);
@@ -205,10 +235,11 @@ int main (int argc, char *argv[]) {
 		}
 	}
 
-beach:
 	R_FREE (method_ptrs);
 	R_FREE (methods);
 	R_FREE (types);
+	R_FREE (images);
+	R_FREE (type2img);
 
 	r2unity_free_metadata (meta);
 	r_buf_free (buf);

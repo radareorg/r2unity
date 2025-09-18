@@ -277,14 +277,31 @@ typedef struct {
 	uint16_t parameterCount;
 } Il2CppMethodDefinition;
 
+typedef struct {
+	uint32_t nameIndex;
+	int32_t assemblyIndex;
+	int32_t typeStart;
+	uint32_t typeCount;
+	int32_t exportedTypeStart;
+	uint32_t exportedTypeCount;
+	int32_t entryPointIndex;
+	uint32_t token;
+	int32_t customAttributeStart;
+	uint32_t customAttributeCount;
+} Il2CppImageDefinition;
+
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf);
 R_API void r2unity_free_metadata (R2UnityMetadata *meta);
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count);
+R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count);
 R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_path, ut64 **out_ptrs);
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs);
+
+R_API void r2unity_set_debug (bool v);
+R_API bool r2unity_is_debug (void);
 
 #endif

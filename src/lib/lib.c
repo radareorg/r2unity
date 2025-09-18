@@ -21,6 +21,17 @@ static inline ut16 RD_LE16 (const ut8 *p) {
 #include <fcntl.h>
 #include <unistd.h>
 
+static bool g_debug = false;
+
+R_API void r2unity_set_debug (bool v) {
+	g_debug = v;
+}
+
+R_API bool r2unity_is_debug (void) {
+	return g_debug;
+}
+
+
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 	if (!buf) {
 		return NULL;
@@ -95,6 +106,14 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 	}
 	meta->strings = r_buf_new_slice (buf, meta->stringOffset, meta->stringSize);
 	meta->string_literals = r_buf_new_slice (buf, meta->stringLiteralOffset, meta->stringLiteralSize);
+	if (g_debug) {
+		fprintf (stderr, "[r2unity] meta version=%d strings=%u@0x%x methods=%d@0x%x types=%d@0x%x\n",
+			meta->version,
+			(unsigned) meta->stringSize, (unsigned) meta->stringOffset,
+			(int) meta->methodsSize, (unsigned) meta->methodsOffset,
+			(int) meta->typeDefinitionsSize, (unsigned) meta->typeDefinitionsOffset);
+	}
+
 	return meta;
 }
 
@@ -237,11 +256,86 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 	return methods;
 }
 
+R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count) {
+	if (!meta || !count) {
+		return NULL;
+	}
+	*count = 0;
+	ut64 ioff = 0;
+	ut64 isize = 0;
+	if (meta->version < 27) {
+		off_t o = meta->header.v24.imagesOffset;
+		ioff = (ut64) o;
+		isize = (ut64) meta->header.v24.imagesSize;
+	} else if (meta->version < 29) {
+		off_t o = meta->header.v27.imagesOffset;
+		ioff = (ut64) o;
+		isize = (ut64) meta->header.v27.imagesSize;
+	} else {
+		off_t o = meta->header.v29.imagesOffset;
+		ioff = (ut64) o;
+		isize = (ut64) meta->header.v29.imagesSize;
+	}
+	if (!isize) {
+		return NULL;
+	}
+	// We parse a minimal 40-byte structure per entry
+	const ut64 entry = 40;
+	*count = (size_t) (isize / entry);
+	if (!*count) return NULL;
+	Il2CppImageDefinition *imgs = R_NEWS (Il2CppImageDefinition, *count);
+	if (!imgs) return NULL;
+	ut8 *buf2 = R_NEWS (ut8, isize);
+	if (!buf2) {
+		R_FREE (imgs);
+		return NULL;
+	}
+	if (r_buf_read_at (meta->buf, ioff, buf2, isize) != (st64) isize) {
+		R_FREE (buf2);
+		R_FREE (imgs);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf2 + i * entry;
+		imgs[i].nameIndex = RD_LE32 (p + 0);
+		imgs[i].assemblyIndex = (int32_t) RD_LE32 (p + 4);
+		imgs[i].typeStart = (int32_t) RD_LE32 (p + 8);
+		imgs[i].typeCount = RD_LE32 (p + 12);
+		imgs[i].exportedTypeStart = (int32_t) RD_LE32 (p + 16);
+		imgs[i].exportedTypeCount = RD_LE32 (p + 20);
+		imgs[i].entryPointIndex = (int32_t) RD_LE32 (p + 24);
+		imgs[i].token = RD_LE32 (p + 28);
+		imgs[i].customAttributeStart = (int32_t) RD_LE32 (p + 32);
+		imgs[i].customAttributeCount = RD_LE32 (p + 36);
+	}
+	R_FREE (buf2);
+	return imgs;
+}
+
 R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_path, ut64 **out_ptrs) {
 	if (!meta || !exe_path || !out_ptrs) {
 		return false;
 	}
 	*out_ptrs = NULL;
+	/* Try specialized fast finders first based on magic, then fall back to r2 scanning */
+	{
+		unsigned char magic[4] = {0};
+		FILE *fp = fopen (exe_path, "rb");
+		if (fp) {
+			(void)fread (magic, 1, 4, fp);
+			fclose (fp);
+		}
+		ut32 m = (ut32)magic[0] | ((ut32)magic[1] << 8) | ((ut32)magic[2] << 16) | ((ut32)magic[3] << 24);
+		if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
+			if (r2unity_find_method_pointers_elf (meta, exe_path, out_ptrs)) {
+				return true;
+			}
+		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
+			if (r2unity_find_method_pointers_macho (meta, exe_path, out_ptrs)) {
+				return true;
+			}
+		}
+	}
 	RCore *core = r_core_new ();
 	if (!core) {
 		return false;
@@ -249,6 +343,7 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
 	// apply relocs/binds/fixups
 	r_core_cmd0 (core, "e bin.cache=true");
 	r_core_cmd0 (core, "e bin.relocs.apply=true");
+	r_core_cmd0 (core, "e io.va=true");
 	if (!r_core_file_open (core, exe_path, 0, 0)) {
 		r_core_free (core);
 		return false;
@@ -304,6 +399,7 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
 	if (jom) r_json_free (jom);
 	free (omj);
 	if (text_lo == UT64_MAX || text_hi <= text_lo) {
+		if (g_debug) fprintf (stderr, "[r2unity] No executable text range found.\n");
 		r_core_free (core);
 		return false;
 	}
@@ -328,7 +424,7 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
         }
         ut8 *rbuf = R_NEWS (ut8, rsize);
         if (!rbuf) break;
-        r_io_read_at (core->io, start, rbuf, rsize);
+        r_io_vread_at (core->io, start, rbuf, rsize);
         const ut64 sampleN = R_MIN ((ut64)512, (ut64)method_count);
         const ut64 step = (ut64)ptrsz * 4; // stride to reduce checks
         for (ut64 off = 0; off + sampleN * (ut64)ptrsz <= rsize; off += step) {
@@ -346,10 +442,12 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
                 ut64 bytes = (ut64)method_count * (ut64)ptrsz;
                 ut8 *tmp = R_NEWS (ut8, bytes);
                 if (!tmp) { continue; }
-                st64 nr = r_io_read_at (core->io, addr, tmp, bytes);
+                st64 nr = r_io_vread_at (core->io, addr, tmp, bytes);
                 if (nr > 0) {
+                    size_t total = (size_t)((ut64)nr / (ut64)ptrsz);
+                    if (total > method_count) total = method_count;
                     ut32 g2 = 0, z2 = 0;
-                    for (size_t i = 0; i < method_count; i++) {
+                    for (size_t i = 0; i < total; i++) {
                         ut64 val = (ptrsz == 8)
                             ? RD_LE64 (tmp + (ut64)i * 8)
                             : (ut64) RD_LE32 (tmp + (ut64)i * 4);
@@ -357,7 +455,8 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
                         if (!val) { z2++; continue; }
                         if (val >= text_lo && val < text_hi) { g2++; }
                     }
-                    if (g2 > 0 && g2 + z2 >= (ut32)(method_count * 9 / 10)) {
+                    for (size_t i = total; i < method_count; i++) candidates[i] = 0;
+                    if (total > 0 && g2 > 0 && g2 + z2 >= (ut32)(total * 9 / 10)) {
                         found = true;
                         R_FREE (tmp);
                         break;
@@ -378,12 +477,10 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
             ut64 rsize = end - start;
             ut8 *rbuf = R_NEWS (ut8, rsize);
             if (!rbuf) break;
-            r_io_read_at (core->io, start, rbuf, rsize);
+            r_io_vread_at (core->io, start, rbuf, rsize);
             for (ut64 off = 0; off + (ut64)(ptrsz + 8) <= rsize; off += 4) {
                 ut32 cnt32 = RD_LE32 (rbuf + off);
-                if (cnt32 < 1024 || cnt32 > (ut32)(method_count * 2)) {
-                    continue;
-                }
+                if (cnt32 < 32) continue;
                 ut64 arrptr = (ptrsz == 8)
                     ? RD_LE64 (rbuf + off + 8)
                     : (ut64) RD_LE32 (rbuf + off + 4);
@@ -402,9 +499,11 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
                 ut64 sbytes = (ut64)sample * (ut64)ptrsz;
                 ut8 *sbuf = R_NEWS (ut8, sbytes);
                 if (!sbuf) continue;
-                st64 sread = r_io_read_at (core->io, arrptr, sbuf, sbytes);
+                st64 sread = r_io_vread_at (core->io, arrptr, sbuf, sbytes);
                 if (sread <= 0) { R_FREE (sbuf); continue; }
-                for (ut32 i = 0; i < sample; i++) {
+                ut32 sitems = (ut32)((ut64)sread / (ut64)ptrsz);
+                if (sitems > sample) sitems = sample;
+                for (ut32 i = 0; i < sitems; i++) {
                     ut64 val = (ptrsz == 8)
                         ? RD_LE64 (sbuf + (ut64)i * 8)
                         : (ut64) RD_LE32 (sbuf + (ut64)i * 4);
@@ -412,7 +511,8 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
                     if (val >= text_lo && val < text_hi) good++;
                 }
                 R_FREE (sbuf);
-                if (good >= 32 && seen >= 32) {
+                if (sitems >= 32 && good >= 8 && seen >= 8) {
+				if (g_debug) fprintf (stderr, "[r2unity] gmp-like arrptr=0x%"PFMT64x" cnt=%u sample=%u good=%u seen=%u\n", arrptr, cnt32, sitems, good, seen);
                     gmp_ptr = arrptr;
                     gmp_cnt = cnt32;
                     found = true;
@@ -428,8 +528,10 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
             ut64 bytes = (ut64) R_MIN (maxc, gmp_cnt) * (ut64) ptrsz;
             ut8 *tmp = R_NEWS (ut8, bytes);
             if (tmp) {
-                r_io_read_at (core->io, gmp_ptr, tmp, bytes);
-                for (size_t i = 0; i < R_MIN (maxc, gmp_cnt); i++) {
+                st64 nr = r_io_vread_at (core->io, gmp_ptr, tmp, bytes);
+                size_t total = (nr > 0)? (size_t)((ut64)nr / (ut64)ptrsz): 0;
+                if (total > R_MIN (maxc, gmp_cnt)) total = R_MIN (maxc, gmp_cnt);
+                for (size_t i = 0; i < total; i++) {
                     candidates[i] = (ptrsz == 8)
                         ? RD_LE64 (tmp + (ut64)i * 8)
                         : (ut64) RD_LE32 (tmp + (ut64)i * 4);
@@ -449,7 +551,7 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
             ut64 rsize = end - start;
             ut8 *rbuf = R_NEWS (ut8, rsize);
             if (!rbuf) break;
-            r_io_read_at (core->io, start, rbuf, rsize);
+            r_io_vread_at (core->io, start, rbuf, rsize);
             for (ut64 off = 0; off + (ut64)(ptrsz * 16) <= rsize; off += ptrsz) {
                 size_t run = 0;
                 for (; run < max_probe; run++) {
@@ -472,14 +574,17 @@ R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_
             R_FREE (rbuf);
         }
         if (best_len > 0) {
+			if (g_debug) fprintf (stderr, "[r2unity] fallback run best_start=0x%"PFMT64x" best_len=%u\n", best_start, (unsigned)best_len);
             // Read best_len pointers in one shot into prefix of candidates, rest zeros
             memset (candidates, 0, method_count * sizeof (ut64));
             ut64 bytes = (ut64)best_len * (ut64)ptrsz;
             ut8 *tmp = R_NEWS (ut8, bytes);
             if (tmp) {
-                st64 nr = r_io_read_at (core->io, best_start, tmp, bytes);
+                st64 nr = r_io_vread_at (core->io, best_start, tmp, bytes);
                 if (nr > 0) {
-                    for (size_t i = 0; i < best_len; i++) {
+                    size_t total = (size_t)((ut64)nr / (ut64)ptrsz);
+                    if (total > best_len) total = best_len;
+                    for (size_t i = 0; i < total; i++) {
                         candidates[i] = (ptrsz == 8)
                             ? RD_LE64 (tmp + (ut64)i * 8)
                             : (ut64) RD_LE32 (tmp + (ut64)i * 4);
@@ -558,8 +663,10 @@ R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *e
 	ut64 bytes = (ut64) count * (ut64) ptrsz;
 	ut8 *tmp = R_NEWS (ut8, bytes);
     if (tmp) {
-        r_io_read_at (core->io, addr, tmp, bytes);
-        for (size_t i = 0; i < count; i++) {
+        st64 nr = r_io_vread_at (core->io, addr, tmp, bytes);
+        size_t total = (nr > 0)? (size_t)((ut64)nr / (ut64)ptrsz): 0;
+        if (total > count) total = count;
+        for (size_t i = 0; i < total; i++) {
             ptrs[i] = (ptrsz == 8)
                 ? RD_LE64 (tmp + (ut64)i * 8)
                 : (ut64) RD_LE32 (tmp + (ut64)i * 4);

@@ -158,7 +158,8 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027) || (type == 8);
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
-			ut64 newv = r_addend;
+			// For RELATIVE, new value should be base + addend
+			ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + r_addend) : r_addend;
 			if (e.is64) { for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 			else { ut32 v32 = (ut32) newv; for (int b = 0; b < 4; b++) loc[b] = (ut8)((v32 >> (8*b)) & 0xff); }
 		}
@@ -173,7 +174,8 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
 			ut64 add = e.is64 ? RD_LE64 (loc) : (ut64) RD_LE32 (loc);
-			ut64 newv = add;
+			// REL: add base to current value
+			ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add;
 			if (e.is64) { for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 			else { ut32 v32 = (ut32) newv; for (int b = 0; b < 4; b++) loc[b] = (ut8)((v32 >> (8*b)) & 0xff); }
 		}
@@ -185,14 +187,14 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			ut64 R = RD_LE64 (rp);
 			if ((R & 1ULL) == 0) {
 				ut64 addr = R; ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr);
-				if (loc) { ut64 add = RD_LE64 (loc); ut64 newv = add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
+				if (loc) { ut64 add = RD_LE64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 				curr = addr + 8;
 			} else {
 				ut64 bitmap = R >> 1;
 				for (int bit = 0; bit < 63; bit++) if (bitmap & (1ULL << bit)) {
 					ut64 addr = curr + (ut64)(bit + 1) * 8ULL;
 					ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr); if (!loc) continue;
-					ut64 add = RD_LE64 (loc); ut64 newv = add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
+					ut64 add = RD_LE64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
 				}
 				curr += 8ULL * 63ULL;
 			}
@@ -202,40 +204,41 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	/* expected number of entries in a possible method pointer array
 	 * use method_count computed earlier (methodsSize / sizeof(Il2CppMethodDefinition))
 	 */
-	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
+    ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
 	for (int i = 0; i < e.nsegs && !found; i++) {
 		const ElfSeg *s = &e.segs[i];
 		bool is_data = (s->flags & 0x1) && !(s->flags & 0x4);
 		if (!is_data || s->filesz < (ut64)(8 + ptrsz)) continue;
 		const ut8 *buf = e.file + s->offset;
 		ut64 sz = s->filesz;
-		for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
-			ut32 cnt32 = RD_LE32 (buf + off);
-			if (cnt32 == 0) continue;
-			/* relax thresholds: accept arrays that are reasonably large compared to expected */
-				if (cnt32 < 32) continue;
-				if (expected && (cnt32 > expected * 10 || cnt32 < expected / 8)) continue;
-			ut64 arrptr = (ptrsz == 8) ? RD_LE64 (buf + off + 8) : (ut64) RD_LE32 (buf + off + 4);
-			ut32 good = 0, seen = 0;
-			ut32 sample = R_MIN ((ut32)128, cnt32);
-			for (ut32 k = 0; k < sample; k++) {
-				const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)k * (ut64)ptrsz);
-				if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)k * (ut64)ptrsz); }
-				if (!pp) break;
-				ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
-				if (val) seen++;
-				if ((val >= text_lo && val < text_hi) || (base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
-			}
-			if (seen >= 8 && good >= 8) {
-				memset (candidates, 0, method_count * sizeof (ut64));
-				size_t tocopy = R_MIN ((size_t) cnt32, method_count);
+            for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
+                ut32 cnt32 = RD_LE32 (buf + off);
+                if (cnt32 == 0) continue;
+                /* stricter thresholds to avoid wrong tables */
+                if (cnt32 < 64) continue;
+                if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) continue;
+                ut64 arrptr = (ptrsz == 8) ? RD_LE64 (buf + off + 8) : (ut64) RD_LE32 (buf + off + 4);
+                ut32 good = 0, seen = 0;
+                ut32 sample = R_MIN ((ut32)128, cnt32);
+                for (ut32 k = 0; k < sample; k++) {
+                    const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)k * (ut64)ptrsz);
+                    if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)k * (ut64)ptrsz); }
+                    if (!pp) break;
+                    ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
+                    if (val) seen++;
+                    if ((val >= text_lo && val < text_hi) || (val && base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
+                }
+                if (seen >= sample / 2 && good >= (sample * 3) / 4) {
+                    if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/elf] arrptr=0x%"PFMT64x" cnt=%u good=%u seen=%u\n", arrptr, cnt32, good, seen);
+                    memset (candidates, 0, method_count * sizeof (ut64));
+                    size_t tocopy = R_MIN ((size_t) cnt32, method_count);
 				size_t in_text = 0;
 				for (size_t m = 0; m < tocopy; m++) {
 					const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)m * (ut64)ptrsz);
 					if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)m * (ut64)ptrsz); }
 					if (!pp) break;
 					ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
-					ut64 abs = (val >= text_lo && val < text_hi)? val: (base_vaddr != UT64_MAX? val + base_vaddr: val);
+					ut64 abs = (val >= text_lo && val < text_hi)? val: ((val && base_vaddr != UT64_MAX)? val + base_vaddr: val);
 					if (abs >= text_lo && abs < text_hi) { candidates[m] = abs; in_text++; }
 				}
 				if (in_text >= 8) { found = true; }
@@ -248,4 +251,3 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	}
 	*out_ptrs = candidates; elf_free (&e); return true;
 }
-
