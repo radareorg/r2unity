@@ -12,6 +12,9 @@ static inline ut64 RD_LE64 (const ut8 *p) {
 	return ((ut64)p[0]) | ((ut64)p[1] << 8) | ((ut64)p[2] << 16) | ((ut64)p[3] << 24) |
 		((ut64)p[4] << 32) | ((ut64)p[5] << 40) | ((ut64)p[6] << 48) | ((ut64)p[7] << 56);
 }
+static inline ut16 RD_LE16 (const ut8 *p) {
+	return (ut16)((ut16)p[0] | ((ut16)p[1] << 8));
+}
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -108,23 +111,59 @@ R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta,
 	if (!meta || !count) {
 		return NULL;
 	}
-	*count = meta->header.v24.typeDefinitionsSize / sizeof (Il2CppTypeDefinition);
-	if (*count == 0) {
+	// On-disk Il2CppTypeDefinition is 88 bytes for v24+ (little-endian)
+	const ut64 entry = 88;
+	ut64 tsize = (ut64) meta->header.v24.typeDefinitionsSize;
+	if (tsize < entry) {
+		*count = 0;
 		return NULL;
 	}
+	*count = (size_t) (tsize / entry);
 	Il2CppTypeDefinition *types = R_NEWS (Il2CppTypeDefinition, *count);
 	if (!types) {
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, meta->header.v24.typeDefinitionsOffset, (ut8 *)types, meta->header.v24.typeDefinitionsSize) != meta->header.v24.typeDefinitionsSize) {
+	ut8 *buf = R_NEWS (ut8, tsize);
+	if (!buf) {
 		R_FREE (types);
 		return NULL;
 	}
+	if (r_buf_read_at (meta->buf, meta->header.v24.typeDefinitionsOffset, buf, tsize) != (st64) tsize) {
+		R_FREE (buf);
+		R_FREE (types);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * entry;
+		types[i].nameIndex = RD_LE32 (p + 0);
+		types[i].namespaceIndex = RD_LE32 (p + 4);
+		types[i].byvalTypeIndex = (int32_t) RD_LE32 (p + 8);
+		types[i].declaringTypeIndex = (int32_t) RD_LE32 (p + 12);
+		types[i].parentIndex = (int32_t) RD_LE32 (p + 16);
+		types[i].elementTypeIndex = (int32_t) RD_LE32 (p + 20);
+		types[i].genericContainerIndex = (int32_t) RD_LE32 (p + 24);
+		types[i].flags = RD_LE32 (p + 28);
+		types[i].fieldStart = (int32_t) RD_LE32 (p + 32);
+		types[i].methodStart = (int32_t) RD_LE32 (p + 36);
+		types[i].eventStart = (int32_t) RD_LE32 (p + 40);
+		types[i].propertyStart = (int32_t) RD_LE32 (p + 44);
+		types[i].nestedTypesStart = (int32_t) RD_LE32 (p + 48);
+		types[i].interfacesStart = (int32_t) RD_LE32 (p + 52);
+		types[i].vtableStart = (int32_t) RD_LE32 (p + 56);
+		types[i].interfaceOffsetsStart = (int32_t) RD_LE32 (p + 60);
+		types[i].method_count = RD_LE16 (p + 64);
+		types[i].property_count = RD_LE16 (p + 66);
+		types[i].field_count = RD_LE16 (p + 68);
+		types[i].event_count = RD_LE16 (p + 70);
+		types[i].nested_type_count = RD_LE16 (p + 72);
+		types[i].vtable_count = RD_LE16 (p + 74);
+		types[i].interfaces_count = RD_LE16 (p + 76);
+		types[i].interface_offsets_count = RD_LE16 (p + 78);
+		types[i].bitfield = RD_LE32 (p + 80);
+		types[i].token = RD_LE32 (p + 84);
+	}
+	R_FREE (buf);
 	return types;
-}
-
-static inline ut16 RD_LE16 (const ut8 *p) {
-	return (ut16)((ut16)p[0] | ((ut16)p[1] << 8));
 }
 
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count) {
@@ -133,7 +172,7 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 	}
 	// On-disk Il2CppMethodDefinition is 32 bytes (little-endian)
 	const ut64 entry = 32;
-	if (meta->header.v24.methodsSize < entry) {
+	if ((ut64) meta->header.v24.methodsSize < entry) {
 		*count = 0;
 		return NULL;
 	}
@@ -583,7 +622,6 @@ static bool macho_load (const char *path, MachO *mo) {
 	}
 	// mach_header_64
 	ut32 ncmds = *(const ut32 *)(p + 0x10);
-	ut32 sizeofcmds = *(const ut32 *)(p + 0x14);
 	mo->ncmds = ncmds;
 	mo->cmd_off = off + 0x20;
 	ut64 co = mo->cmd_off;

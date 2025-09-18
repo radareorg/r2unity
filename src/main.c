@@ -135,8 +135,18 @@ int main (int argc, char *argv[]) {
 					addr = method_ptrs[idx];
 				}
 				if (limit < 0 || printed < limit) {
+#if 0
 					printf ("f %s @ 0x%"PFMT64x"\n", fullname, addr);
 					printf ("CCu Method: %s @ 0x%"PFMT64x"\n", fullname, addr);
+#else
+					if (addr > 0x1000) {
+						r_name_filter (fullname, -1);
+						printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+						printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+					} else {
+						printf ("# %s\n", fullname);
+					}
+#endif
 					printed++;
 				}
 			}
@@ -155,11 +165,14 @@ int main (int argc, char *argv[]) {
 			char *namespace_name = (char *) r2unity_get_string (meta, types[j].namespaceIndex);
 			if (type_name) {
 				if (limit < 0 || printed < limit) {
-					if (namespace_name && *namespace_name) {
+#if 0
+					if (R_STR_ISNOTEMPTY (namespace_name)) {
 						printf ("f %s.%s @ 0x0\n", namespace_name, type_name);
 					} else {
 						printf ("f %s @ 0x0\n", type_name);
 					}
+#else
+#endif
 					printed++;
 				}
 			}
