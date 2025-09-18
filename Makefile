@@ -15,6 +15,8 @@ OBJS = $(SRCS:.c=.o)
 # Default target
 all: $(EXEC)
 
+# check target wraps r2r with a timeout wrapper
+
 # Linking the executable
 $(EXEC): $(OBJS)
 	$(CC) $(LDFLAGS) -o $@ $^

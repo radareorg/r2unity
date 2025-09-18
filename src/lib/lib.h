@@ -221,6 +221,7 @@ typedef union {
 typedef struct {
 	int32_t version;
 	Il2CppGlobalMetadataHeader header;
+	RBuffer *buf;
 	RBuffer *strings;
 	RBuffer *string_literals;
 } R2UnityMetadata;
@@ -272,5 +273,8 @@ R_API void r2unity_free_metadata (R2UnityMetadata *meta);
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count);
+R_API bool r2unity_find_method_pointers (R2UnityMetadata *meta, const char *exe_path, ut64 **out_ptrs);
+R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
+R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
 
 #endif
