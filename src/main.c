@@ -117,7 +117,7 @@ int main (int argc, char *argv[]) {
 	r2unity_set_debug (debug);
 	if (!meta) {
 		fprintf (stderr, "Failed to parse metadata\n");
-		r_buf_free (buf);
+		r_unref (buf);
 		return 1;
 	}
 
@@ -165,7 +165,7 @@ int main (int argc, char *argv[]) {
 		R_FREE (methods);
 		R_FREE (types);
 		r2unity_free_metadata (meta);
-		r_buf_free (buf);
+		r_unref (buf);
 		return 0;
 	}
 
@@ -297,7 +297,7 @@ int main (int argc, char *argv[]) {
 	R_FREE (type2img);
 
 	r2unity_free_metadata (meta);
-	r_buf_free (buf);
+	r_unref (buf);
 
 	return 0;
 }

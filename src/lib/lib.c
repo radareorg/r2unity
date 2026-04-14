@@ -114,8 +114,8 @@ R_API void r2unity_free_metadata (R2UnityMetadata *meta) {
 	if (!meta) {
 		return;
 	}
-	r_buf_free (meta->strings);
-	r_buf_free (meta->string_literals);
+	r_unref (meta->strings);
+	r_unref (meta->string_literals);
 	R_FREE (meta);
 }
 
