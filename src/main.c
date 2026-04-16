@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "lib/lib.h"
 
 static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) {
@@ -55,7 +56,7 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 }
 
 static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [--json-one-line] [--quiet] [-l N] [--fast] [--gmp-addr 0xADDR] [--gmp-count N] [-v|--debug] <executable> <path/to/global-metadata.dat>\n", prog_name);
+	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
 }
 
 int main (int argc, char *argv[]) {
@@ -66,45 +67,28 @@ int main (int argc, char *argv[]) {
 	ut64 gmp_addr = 0;
 	size_t gmp_count = 0;
 	bool fast = false;
-	int i = 1;
-	for (; i < argc; i++) {
-		if (!strcmp (argv[i], "--json-one-line")) {
-			json_one_line = true;
-			continue;
+	int opt;
+	while ((opt = getopt (argc, argv, "jqfvl:a:c:")) != -1) {
+		switch (opt) {
+		case 'j': json_one_line = true; break;
+		case 'q': quiet = true; break;
+		case 'f': fast = true; break;
+		case 'v': debug = true; break;
+		case 'l': limit = strtol (optarg, NULL, 0); break;
+		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
+		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
+		default:
+			print_usage (argv[0]);
+			return 1;
 		}
-		if (!strcmp (argv[i], "--quiet")) {
-			quiet = true;
-			continue;
-		}
-		if (!strcmp (argv[i], "--fast")) {
-			fast = true;
-			continue;
-		}
-		if (!strcmp (argv[i], "-v") || !strcmp (argv[i], "--debug")) {
-			debug = true;
-			continue;
-		}
-		if (!strcmp (argv[i], "-l") && i + 1 < argc) {
-			limit = strtol (argv[++i], NULL, 0);
-			continue;
-		}
-		if (!strcmp (argv[i], "--gmp-addr") && i + 1 < argc) {
-			gmp_addr = (ut64) strtoull (argv[++i], NULL, 0);
-			continue;
-		}
-		if (!strcmp (argv[i], "--gmp-count") && i + 1 < argc) {
-			gmp_count = (size_t) strtoull (argv[++i], NULL, 0);
-			continue;
-		}
-		break;
 	}
-	if (argc - i != 2) {
+	if (argc - optind != 2) {
 		print_usage (argv[0]);
 		return 1;
 	}
 
-	const char *exe_path = argv[i];
-	const char *metadata_path = argv[i + 1];
+	const char *exe_path = argv[optind];
+	const char *metadata_path = argv[optind + 1];
 
 	RBuffer *buf = r_buf_new_file (metadata_path, O_RDONLY, 0);
 	if (!buf) {
