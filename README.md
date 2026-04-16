@@ -1,96 +1,158 @@
 # r2unity
 
-A lightweight, dependency-free C tool to parse Unity's `global-metadata.dat` and generate [radare2](https://github.com/radareorg/radare2) scripts for analyzing `libil2cpp.so` binaries.
+A lightweight C tool and (upcoming) radare2 core plugin that parses Unity's `global-metadata.dat` and annotates the matching IL2CPP-compiled binary with class, method, and field information.
 
 ## Motivation
 
-The Unity engine, when using its IL2CPP backend, compiles C# code into C++ and then into a native library (`libil2cpp.so` on Android/Linux, `GameAssembly.dll` on Windows, etc.). To understand the original code structure, reverse engineers need to parse the `global-metadata.dat` file, which contains all the type information, method names, and pointers into the native library.
+Unity with the IL2CPP backend compiles C# to native code. The symbolic information (namespaces, classes, method names, tokens) is stripped from the native binary and kept in a separate file called `global-metadata.dat`. Without it, the binary is a blob of anonymous functions.
 
-While powerful tools like [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) exist, they are often written in higher-level languages (like C#) and produce generic outputs (like C++ headers or JSON files).
+**r2unity** reads the `.dat`, locates the method pointer table inside the native binary, and emits radare2 commands that flag functions, add comments, and apply types — directly in your r2 session, with no runtime dependencies.
 
-**r2unity** takes a different approach by focusing on a single goal: **deep integration with radare2**. It is written in plain C for maximum performance, portability, and zero runtime dependencies. The output is a ready-to-use `.r2` script, allowing analysts to immediately apply this metadata within their radare2 sessions.
+Inspired by [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) and [lib-global-metadata](https://github.com/axstin/lib-global-metadata), but focused on tight integration with [radare2](https://github.com/radareorg/radare2).
 
-This project is inspired by the functionality of Il2CppDumper and the metadata parsing concepts from projects like [lib-global-metadata](https://github.com/axstin/lib-global-metadata).
+## What r2unity needs
 
-## Features
+Exactly **two files**:
 
-- **Parses `global-metadata.dat`:** Extracts classes, methods, and their relative addresses.
-- **Generates Radare2 Scripts:** Creates `.r2` files to name functions and add comments in your analysis session.
-- **Written in Plain C:** No dependencies beyond a standard C compiler (like `gcc` or `clang`).
-- **Lightweight and Fast:** Designed for speed and minimal memory footprint.
-- **Cross-Platform:** Aims to be easily compilable on Linux, macOS, and Windows.
+1. The **IL2CPP native binary** (this is what you open in radare2):
+   - Android: `libil2cpp.so`
+   - iOS: `UnityFramework` (a Mach-O inside `UnityFramework.framework`)
+   - Windows: `GameAssembly.dll`
+   - macOS: `GameAssembly.dylib`
+2. The matching **`global-metadata.dat`**.
 
-## Getting Started
+The **main application executable is NOT needed**:
+- On iOS, `Payload/<App>.app/<App>` is a ~50–100 KB thin launcher whose only job is to load `UnityFramework.framework`. All IL2CPP code lives in `UnityFramework` (tens of MB).
+- On Android, `lib/<arch>/libmain.so` is a small shim (a few KB). All IL2CPP code lives in `libil2cpp.so`.
 
-### Prerequisites
+So you only pass r2unity the Unity binary and the `.dat` — never the launcher.
 
-- A C compiler (e.g., `gcc`, `clang`)
-- `make`
+## Where to find the files
 
-### Installation
+### Android (`.apk` / `.apks` / `.aab`)
+
+An APK is a zip. Extract (or browse with `r2 apk://…`) and look at:
+
+```
+<apk-root>/
+├── lib/
+│   ├── arm64-v8a/
+│   │   └── libil2cpp.so            ← open this in radare2
+│   └── armeabi-v7a/
+│       └── libil2cpp.so            ← or this, for 32-bit
+└── assets/
+    └── bin/
+        └── Data/
+            └── Managed/
+                └── Metadata/
+                    └── global-metadata.dat   ← pass this to r2unity
+```
+
+Pick the `libil2cpp.so` for the architecture you care about (typically `arm64-v8a`).
+
+### iOS (`.ipa`)
+
+An IPA is also a zip. Inside:
+
+```
+Payload/
+└── <AppName>.app/
+    ├── <AppName>                                   ← thin launcher (NOT needed)
+    ├── Frameworks/
+    │   └── UnityFramework.framework/
+    │       └── UnityFramework                      ← open this in radare2
+    └── Data/
+        └── Managed/
+            └── Metadata/
+                └── global-metadata.dat             ← pass this to r2unity
+```
+
+Note that on iOS the metadata lives under `<AppName>.app/Data/…`, **not** under the `.framework/` directory.
+
+### Windows / desktop builds
+
+```
+<BuildRoot>/
+├── GameAssembly.dll                                ← the IL2CPP binary (Windows)
+└── <AppName>_Data/
+    └── il2cpp_data/
+        └── Metadata/
+            └── global-metadata.dat
+```
+
+macOS standalone builds use `GameAssembly.dylib` inside the `.app` bundle, with metadata at `<App>.app/Contents/Resources/Data/il2cpp_data/Metadata/global-metadata.dat`.
+
+## Automatic metadata discovery
+
+The (planned) radare2 core plugin locates `global-metadata.dat` automatically by walking upward from the directory of the currently loaded binary and probing the well-known relative paths above:
+
+| Loaded binary | Candidate `global-metadata.dat` paths tried (relative to binary) |
+| --- | --- |
+| `…/lib/<arch>/libil2cpp.so` (Android) | `../../assets/bin/Data/Managed/Metadata/global-metadata.dat` |
+| `…/UnityFramework.framework/UnityFramework` (iOS) | `../../Data/Managed/Metadata/global-metadata.dat` |
+| `…/GameAssembly.dll` (Windows) | `./*_Data/il2cpp_data/Metadata/global-metadata.dat` |
+| `…/GameAssembly.dylib` (macOS) | `../Resources/Data/il2cpp_data/Metadata/global-metadata.dat` |
+| any | `./global-metadata.dat` (user already placed it next to the binary) |
+
+If none of these resolve, the plugin asks the user to supply the path explicitly. The CLI always takes the two paths as arguments — no auto-detection — to keep scripted use predictable.
+
+## Getting started
+
+### Build
 
 ```bash
-git clone https://github.com/your-username/r2unity.git
+git clone https://github.com/radareorg/r2unity.git
 cd r2unity
 make
 ```
 
-## Usage
+Requires a C compiler and `pkg-config` with radare2 dev headers installed (`r_util`, `r_core`).
 
-The primary goal is to generate a script that radare2 can use to annotate the `libil2cpp.so` binary.
+### Usage (CLI)
 
-1.  **Extract Files:** Obtain the `global-metadata.dat` file and the main binary (e.g., `libil2cpp.so`) from your target application.
+```bash
+# Generate an r2 script from the Unity binary + metadata:
+./r2unity path/to/libil2cpp.so path/to/global-metadata.dat > symbols.r2
 
-2.  **Run r2unity:** Execute `r2unity` with the metadata file and the base address where the binary is loaded. The output will be an `.r2` script.
+# Apply the script when opening the binary in radare2:
+r2 -i symbols.r2 path/to/libil2cpp.so
+```
 
-    ```bash
-    ./r2unity /path/to/global-metadata.dat > symbols.r2
-    ```
+On iOS, swap `libil2cpp.so` for `…/UnityFramework.framework/UnityFramework`.
 
-3.  **Launch Radare2:** Open the binary in radare2, sourcing the generated script with the `-i` flag.
+Useful flags:
 
-    ```bash
-    r2 -i symbols.r2 /path/to/libil2cpp.so
-    ```
+- `-j` — emit a single-line JSON status report (used by checks).
+- `-q` — quiet, omit the `#` header comments.
+- `-f` — fast path: auto-detect ELF/Mach-O and scan for the method pointer table.
+- `-a 0xADDR -c N` — read N method pointers starting at address `0xADDR` inside the binary.
+- `-l N` — limit number of emitted entries.
+- `-v` — verbose debug output.
 
-Radare2 will execute the script, defining flags (function names) for all the methods found in the metadata.
-
-### Example Output (`symbols.r2`)
-
-The generated script will contain a series of radare2 commands:
+### Example output
 
 ```
-# r2 script generated by r2unity
-# Found 50,000+ methods in global-metadata.dat
-
-f Some.Namespace.ClassName.MethodName @ 0x1a2b3c
-CCu Method: Some.Namespace.ClassName.MethodName @ 0x1a2b3c
-
-f Another.Class.Update @ 0x2b3c4d
-CCu Method: Another.Class.Update @ 0x2b3c4d
-
-f Player.Stats.GetHealth @ 0x3c4d5e
-CCu Method: Player.Stats.GetHealth @ 0x3c4d5e
-
+'@0x1a2b3c'f sym.unity.Assembly-CSharp.dll.Player.Update(0)
+'@0x1a2b3c'CCu Method: [Assembly-CSharp.dll] public Player.Update(0)
+'@0x2b3c4d'f sym.unity.mscorlib.dll.System.String.Concat(2)
 ...
 ```
 
+
+
+
 ## Philosophy
 
-- **Do One Thing Well:** Focus solely on creating `r2` scripts from Unity metadata.
-- **Native and Dependency-Free:** Avoid the complexity of runtimes like .NET or Python. A single, static binary is the goal.
-- **Integrate, Don't Just Convert:** The output should be directly consumable by the target tool (`radare2`) to provide immediate value.
-
-## Contributing
-
-Contributions are welcome! Please feel free to open an issue or submit a pull request. As this is a C project, please adhere to a clean and readable coding style.
+- **Do one thing well** — turn Unity metadata into radare2 commands.
+- **Native and dependency-free** — plain C, no .NET or Python runtime.
+- **Integrate, don't convert** — output is directly consumable by r2, not a detour through JSON or C# headers.
 
 ## Acknowledgments
 
-- The [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) project for being the gold standard in Unity IL2CPP reversing.
-- The [lib-global-metadata](https://github.com/axstin/lib-global-metadata) project for its clear implementation of metadata parsing.
+- [Il2CppDumper](https://github.com/Perfare/Il2CppDumper) — the reference implementation for Unity IL2CPP reversing.
+- [lib-global-metadata](https://github.com/axstin/lib-global-metadata) — clean reference for metadata parsing.
 - The [radare2](https://github.com/radareorg/radare2) community.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE](LICENSE).

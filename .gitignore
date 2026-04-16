@@ -1,0 +1,10 @@
+# macOS
+.DS_Store
+
+# Build artifacts
+*.o
+/r2unity
+
+# Third-party reference checkouts (radare2, il2cpp dumper, etc.)
+/third_party/
+
