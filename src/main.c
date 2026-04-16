@@ -96,9 +96,9 @@ int main (int argc, char *argv[]) {
 		return 1;
 	}
 
-	R2UnityMetadata *meta = r2unity_parse_metadata (buf);
 	/* configure debug */
 	r2unity_set_debug (debug);
+	R2UnityMetadata *meta = r2unity_parse_metadata (buf);
 	if (!meta) {
 		fprintf (stderr, "Failed to parse metadata\n");
 		r_unref (buf);
