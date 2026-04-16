@@ -33,21 +33,18 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 	if (!meta) {
 		return NULL;
 	}
-	// read sanity and version first
-	uint32_t sanity = 0;
-	int32_t version = 0;
-	if (r_buf_read_at (buf, 0, (ut8 *)&sanity, 4) != 4) {
+	// Read sanity and version from the on-disk little-endian layout.
+	ut8 preamble[8];
+	if (r_buf_read_at (buf, 0, preamble, sizeof (preamble)) != (st64) sizeof (preamble)) {
 		R_FREE (meta);
 		return NULL;
 	}
+	uint32_t sanity = RD_LE32 (preamble);
 	if (sanity != IL2CPP_MAGIC) {
 		R_FREE (meta);
 		return NULL;
 	}
-	if (r_buf_read_at (buf, 4, (ut8 *)&version, 4) != 4) {
-		R_FREE (meta);
-		return NULL;
-	}
+	int32_t version = (int32_t) RD_LE32 (preamble + 4);
 	meta->version = version;
 	size_t header_size = 0;
 	if (version < 24 || version > 31) {
@@ -63,9 +60,17 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v29);
 	}
 	// read full header for selected version
-	if (r_buf_read_at (buf, 0, (ut8 *)&meta->header.v24, header_size) != (st64)header_size) {
+	if (r_buf_read_at (buf, 0, (ut8 *) &meta->header.v24, header_size) != (st64) header_size) {
 		R_FREE (meta);
 		return NULL;
+	}
+	// Normalize header from on-disk little-endian to native byte order.
+	// Every field in the Il2Cpp header structs is a 32-bit word, so a single
+	// in-place RD_LE32 sweep handles all versions and is a no-op on LE hosts.
+	uint32_t *hdr_words = (uint32_t *) &meta->header;
+	size_t nfields = header_size / sizeof (uint32_t);
+	for (size_t i = 0; i < nfields; i++) {
+		hdr_words[i] = RD_LE32 ((const ut8 *) &hdr_words[i]);
 	}
 	meta->buf = buf;
 	/* Normalize header fields depending on version to simplify later access */
