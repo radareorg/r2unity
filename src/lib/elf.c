@@ -154,7 +154,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			ut64 r_info = e.is64 ? RD_LE64 (rp + 8) : (ut64) RD_LE32 (rp + 4);
 			ut64 r_addend = e.is64 ? RD_LE64 (rp + 16) : (ut64) RD_LE32 (rp + 8);
 			ut64 type = e.is64 ? (r_info & 0xffffffffULL) : (r_info & 0xffULL);
-			bool is_relative = (type == 8) || (type == 23) || (type == 1027) || (type == 8);
+			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
 			// For RELATIVE, new value should be base + addend
@@ -169,7 +169,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 			ut64 r_offset = e.is64 ? RD_LE64 (rp + 0) : (ut64) RD_LE32 (rp + 0);
 			ut64 r_info = e.is64 ? RD_LE64 (rp + 8) : (ut64) RD_LE32 (rp + 4);
 			ut64 type = e.is64 ? (r_info & 0xffffffffULL) : (r_info & 0xffULL);
-			bool is_relative = (type == 8) || (type == 23) || (type == 1027) || (type == 8);
+			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
 			ut64 add = e.is64 ? RD_LE64 (loc) : (ut64) RD_LE32 (loc);
