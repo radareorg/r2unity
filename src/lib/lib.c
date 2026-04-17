@@ -668,6 +668,378 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t 
 	return out;
 }
 
+/* v29+ attribute data range: { uint32 token, uint32 startOffset }. The end of
+ * an entry's BLOB is the next entry's startOffset, or attributeDataSize for
+ * the last entry. See doc/pinvoke.md §4.1 and Il2CppDumper Metadata.cs:131. */
+typedef struct {
+	uint32_t token;
+	uint32_t start_offset;
+} R2UAttrRange;
+
+static R2UAttrRange *load_attribute_ranges (R2UnityMetadata *meta, size_t *count,
+		ut64 *out_data_off, ut64 *out_data_size) {
+	*count = 0;
+	*out_data_off = 0;
+	*out_data_size = 0;
+	if (meta->version < 29) {
+		return NULL;
+	}
+	/* v29+ repurposes the v27-era fields at this position:
+	 *   attributesInfoOffset/Size  -> attributeDataOffset/Size
+	 *   attributeTypesOffset/Size  -> attributeDataRangeOffset/Size
+	 * The byte positions are identical; only the semantics changed. */
+	ut64 data_off = meta->header.v29.attributesInfoOffset;
+	ut64 data_size = meta->header.v29.attributesInfoSize;
+	ut64 range_off = meta->header.v29.attributeTypesOffset;
+	ut64 range_size = meta->header.v29.attributeTypesSize;
+	if (!range_size || (range_size % 8) != 0) {
+		return NULL;
+	}
+	size_t n = range_size / 8;
+	R2UAttrRange *ranges = R_NEWS (R2UAttrRange, n);
+	if (!ranges) {
+		return NULL;
+	}
+	ut8 *buf = R_NEWS (ut8, range_size);
+	if (!buf) {
+		R_FREE (ranges);
+		return NULL;
+	}
+	if (r_buf_read_at (meta->buf, range_off, buf, range_size) != (st64) range_size) {
+		R_FREE (buf);
+		R_FREE (ranges);
+		return NULL;
+	}
+	for (size_t i = 0; i < n; i++) {
+		ranges[i].token = r_read_le32 (buf + i * 8 + 0);
+		ranges[i].start_offset = r_read_le32 (buf + i * 8 + 4);
+	}
+	R_FREE (buf);
+	*count = n;
+	*out_data_off = data_off;
+	*out_data_size = data_size;
+	return ranges;
+}
+
+/* ECMA-335 §II.23.2 compressed uint32. Returns 0 on malformed input. */
+static uint32_t read_compressed_uint (const ut8 *buf, size_t bufsize, size_t *pos) {
+	if (*pos >= bufsize) {
+		return 0;
+	}
+	ut8 b0 = buf[*pos];
+	if ((b0 & 0x80) == 0) {
+		*pos += 1;
+		return b0;
+	}
+	if ((b0 & 0xC0) == 0x80) {
+		if (*pos + 2 > bufsize) {
+			return 0;
+		}
+		uint32_t v = ((uint32_t) (b0 & 0x3F) << 8) | buf[*pos + 1];
+		*pos += 2;
+		return v;
+	}
+	if (*pos + 4 > bufsize) {
+		return 0;
+	}
+	uint32_t v = ((uint32_t) (b0 & 0x1F) << 24)
+		| ((uint32_t) buf[*pos + 1] << 16)
+		| ((uint32_t) buf[*pos + 2] << 8)
+		| buf[*pos + 3];
+	*pos += 4;
+	return v;
+}
+
+/* For attribute entry at `range_idx` (v29+), read the ctor method indices
+ * (first 4 bytes after count header) and check if any ctor's declaring type
+ * matches the target attribute type name.
+ *
+ * Returns the matched attribute kind (R2U_INTEROP_REVERSE_PINVOKE or
+ * R2U_INTEROP_UNMANAGED_ONLY), or 0 if no match. */
+static uint8_t attribute_range_interop_kind (
+		R2UnityMetadata *meta,
+		const R2UAttrRange *ranges, size_t nranges,
+		size_t range_idx,
+		ut64 attr_data_off, ut64 attr_data_size,
+		const Il2CppMethodDefinition *methods, size_t nmethods,
+		const Il2CppTypeDefinition *types, size_t ntypes) {
+	if (range_idx >= nranges) {
+		return 0;
+	}
+	ut64 blob_start = ranges[range_idx].start_offset;
+	ut64 blob_end = (range_idx + 1 < nranges)
+		? ranges[range_idx + 1].start_offset
+		: attr_data_size;
+	if (blob_end <= blob_start || blob_end > attr_data_size) {
+		return 0;
+	}
+	ut64 blob_len = blob_end - blob_start;
+	if (blob_len > 0x10000) {
+		return 0;
+	}
+	ut8 *blob = R_NEWS (ut8, (size_t) blob_len);
+	if (!blob) {
+		return 0;
+	}
+	if (r_buf_read_at (meta->buf, attr_data_off + blob_start, blob, blob_len) != (st64) blob_len) {
+		R_FREE (blob);
+		return 0;
+	}
+	size_t pos = 0;
+	uint32_t n_attrs = read_compressed_uint (blob, blob_len, &pos);
+	if (n_attrs == 0 || (ut64) pos + (ut64) n_attrs * 4 > blob_len) {
+		R_FREE (blob);
+		return 0;
+	}
+	uint8_t kind = 0;
+	for (uint32_t i = 0; i < n_attrs; i++) {
+		uint32_t ctor_idx = r_read_le32 (blob + pos + i * 4);
+		if (ctor_idx >= nmethods) {
+			continue;
+		}
+		int32_t declaring = methods[ctor_idx].declaringType;
+		if (declaring < 0 || (size_t) declaring >= ntypes) {
+			continue;
+		}
+		const char *name = r2unity_get_string (meta, types[declaring].nameIndex);
+		if (!name) {
+			continue;
+		}
+		if (!strcmp (name, "MonoPInvokeCallbackAttribute")) {
+			kind = R2U_INTEROP_REVERSE_PINVOKE;
+			free ((void *) name);
+			break;
+		}
+		if (!strcmp (name, "UnmanagedCallersOnlyAttribute")) {
+			kind = R2U_INTEROP_UNMANAGED_ONLY;
+			free ((void *) name);
+			break;
+		}
+		free ((void *) name);
+	}
+	R_FREE (blob);
+	return kind;
+}
+
+R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta, size_t *count) {
+	if (!meta || !count) {
+		return NULL;
+	}
+	*count = 0;
+	if (meta->version < 29) {
+		/* Pre-v29: attribute args live in native generator stubs; see doc/pinvoke.md §4.2. */
+		return NULL;
+	}
+
+	size_t method_count = 0;
+	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	if (!methods || !method_count) {
+		R_FREE (methods);
+		return NULL;
+	}
+	size_t type_count = 0;
+	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
+	size_t image_count = 0;
+	Il2CppImageDefinition *images = r2unity_get_images (meta, &image_count);
+
+	ut64 attr_data_off = 0, attr_data_size = 0;
+	size_t nranges = 0;
+	R2UAttrRange *ranges = load_attribute_ranges (meta, &nranges, &attr_data_off, &attr_data_size);
+	if (!ranges || !nranges) {
+		R_FREE (methods);
+		R_FREE (types);
+		R_FREE (images);
+		R_FREE (ranges);
+		return NULL;
+	}
+
+	/* typeIndex -> imageIndex map for naming and scoping. */
+	int *type2img = NULL;
+	if (images && type_count) {
+		type2img = R_NEWS (int, type_count);
+		if (type2img) {
+			for (size_t ti = 0; ti < type_count; ti++) {
+				type2img[ti] = -1;
+			}
+			for (size_t ii = 0; ii < image_count; ii++) {
+				int start = images[ii].typeStart;
+				int tcount = (int) images[ii].typeCount;
+				if (start < 0 || tcount <= 0) {
+					continue;
+				}
+				for (int k = 0; k < tcount && (size_t) (start + k) < type_count; k++) {
+					type2img[start + k] = (int) ii;
+				}
+			}
+		}
+	}
+
+	/* Build per-image sorted (token, method_idx) index. Method tokens are
+	 * only unique within their owning image, so lookups must be scoped. */
+	typedef struct { uint32_t token; int32_t idx; } TokIdx;
+	int32_t *img_tok_start = NULL;  /* offset into tmap for each image */
+	int32_t *img_tok_count = NULL;
+	TokIdx *tmap = NULL;
+	if (type2img && image_count) {
+		img_tok_start = R_NEWS0 (int32_t, image_count);
+		img_tok_count = R_NEWS0 (int32_t, image_count);
+		tmap = R_NEWS (TokIdx, method_count);
+		if (img_tok_start && img_tok_count && tmap) {
+			/* Count methods per image. */
+			for (size_t j = 0; j < method_count; j++) {
+				int32_t decl = methods[j].declaringType;
+				if (decl < 0 || (size_t) decl >= type_count) {
+					continue;
+				}
+				int img_idx = type2img[decl];
+				if (img_idx < 0 || (size_t) img_idx >= image_count) {
+					continue;
+				}
+				if (methods[j].token) {
+					img_tok_count[img_idx]++;
+				}
+			}
+			/* Assign start offsets. */
+			int32_t acc = 0;
+			for (size_t ii = 0; ii < image_count; ii++) {
+				img_tok_start[ii] = acc;
+				acc += img_tok_count[ii];
+				img_tok_count[ii] = 0;  /* reset for use as append cursor */
+			}
+			/* Fill. */
+			for (size_t j = 0; j < method_count; j++) {
+				int32_t decl = methods[j].declaringType;
+				if (decl < 0 || (size_t) decl >= type_count) {
+					continue;
+				}
+				int img_idx = type2img[decl];
+				if (img_idx < 0 || (size_t) img_idx >= image_count) {
+					continue;
+				}
+				if (!methods[j].token) {
+					continue;
+				}
+				int32_t pos = img_tok_start[img_idx] + img_tok_count[img_idx]++;
+				tmap[pos].token = methods[j].token;
+				tmap[pos].idx = (int32_t) j;
+			}
+			(void) acc;
+			/* Sort each image's slice by token. */
+			extern int r2u_cmp_tokidx (const void *a, const void *b);
+			for (size_t ii = 0; ii < image_count; ii++) {
+				qsort (tmap + img_tok_start[ii], (size_t) img_tok_count[ii],
+					sizeof (TokIdx), r2u_cmp_tokidx);
+			}
+		}
+	}
+
+	/* Iterate attribute ranges per-image, so method-token lookups stay scoped. */
+	size_t cap = 32;
+	R2UnityInterop *out = R_NEWS0 (R2UnityInterop, cap);
+	size_t n = 0;
+	if (!out) {
+		goto done;
+	}
+	for (size_t ii = 0; ii < image_count; ii++) {
+		int32_t r_start = images[ii].customAttributeStart;
+		int32_t r_end = r_start + (int32_t) images[ii].customAttributeCount;
+		if (r_start < 0 || r_end < 0 || (size_t) r_end > nranges) {
+			continue;
+		}
+		for (int32_t ri = r_start; ri < r_end; ri++) {
+			uint32_t tok = ranges[ri].token;
+			if ((tok >> 24) != 0x06) {
+				continue;
+			}
+			uint8_t kind = attribute_range_interop_kind (meta, ranges, nranges, (size_t) ri,
+				attr_data_off, attr_data_size,
+				methods, method_count, types, type_count);
+			if (!kind) {
+				continue;
+			}
+			/* Binary-search this image's token slice. */
+			int32_t mi = -1;
+			if (tmap) {
+				size_t lo = (size_t) img_tok_start[ii];
+				size_t hi = lo + (size_t) img_tok_count[ii];
+				while (lo < hi) {
+					size_t mid = (lo + hi) >> 1;
+					if (tmap[mid].token < tok) {
+						lo = mid + 1;
+					} else if (tmap[mid].token > tok) {
+						hi = mid;
+					} else {
+						mi = tmap[mid].idx;
+						break;
+					}
+				}
+			}
+			if (mi < 0) {
+				continue;
+			}
+			if (n + 1 > cap) {
+			size_t ncap = cap * 2;
+			R2UnityInterop *noo = realloc (out, ncap * sizeof (R2UnityInterop));
+			if (!noo) {
+				break;
+			}
+			memset (noo + cap, 0, (ncap - cap) * sizeof (R2UnityInterop));
+			out = noo;
+			cap = ncap;
+		}
+		R2UnityInterop *it = &out[n++];
+		const Il2CppMethodDefinition *m = &methods[mi];
+		it->kind = kind;
+		it->method_index = mi;
+		it->token = m->token;
+		it->flags = m->flags;
+		it->iflags = m->iflags;
+		it->wrapper_va = 0;
+		it->wrapper_index = UINT32_MAX;
+		it->confidence = 100;
+
+		const Il2CppTypeDefinition *td = NULL;
+		if (types && m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
+			td = &types[m->declaringType];
+		}
+		it->name = build_qualified_name (meta, td, m->nameIndex);
+
+		int img_idx = -1;
+		if (type2img && m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
+			img_idx = type2img[m->declaringType];
+		}
+		it->image_index = img_idx;
+		if (img_idx >= 0 && images && (size_t) img_idx < image_count) {
+			it->image_name = (char *) r2unity_get_string (meta, images[img_idx].nameIndex);
+		}
+		}  /* close for ri */
+	}  /* close for ii */
+	if (n == 0) {
+		R_FREE (out);
+		out = NULL;
+	}
+done:
+	R_FREE (ranges);
+	R_FREE (methods);
+	R_FREE (types);
+	R_FREE (images);
+	R_FREE (type2img);
+	R_FREE (tmap);
+	*count = n;
+	return out;
+}
+
+/* qsort comparator used by r2unity_enumerate_reverse_pinvokes; kept at file
+ * scope because nested functions are not portable in ISO C. */
+int r2u_cmp_tokidx (const void *a, const void *b) {
+	typedef struct { uint32_t token; int32_t idx; } TokIdx;
+	const TokIdx *x = a;
+	const TokIdx *y = b;
+	if (x->token < y->token) return -1;
+	if (x->token > y->token) return 1;
+	return 0;
+}
+
 R_API void r2unity_free_interop (R2UnityInterop *items, size_t count) {
 	if (!items) {
 		return;

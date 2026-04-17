@@ -359,6 +359,10 @@ R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *
 R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count);
 R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count);
 R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t *count);
+/* Reverse-P/Invoke (native -> managed) enumeration via v29+ attribute BLOB.
+ * Returns methods tagged with [MonoPInvokeCallback] or [UnmanagedCallersOnly].
+ * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
+R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta, size_t *count);
 R_API void r2unity_free_interop (R2UnityInterop *items, size_t count);
 /* Simplified API: use format-specific finders, or manual read stub. */
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);

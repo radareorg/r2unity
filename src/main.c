@@ -76,6 +76,7 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  -c N          Read N pointer entries (pair with -a)\n"
 		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
+		"  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)\n"
 		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
 		"  -v            Verbose debug tracing on stderr\n"
 		"  -h            Show this help and exit\n"
@@ -440,7 +441,82 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 				(unsigned) it->confidence);
 		}
 		if (!quiet) {
-			printf ("# summary: pinvokes=%zu reverse_pinvokes=0 (wrapper resolution not yet implemented)\n", n);
+			printf ("# summary: pinvokes=%zu\n", n);
+		}
+	}
+
+	r2unity_free_interop (items, n);
+	return 0;
+}
+
+static const char *interop_kind_label (uint8_t kind) {
+	switch (kind) {
+	case R2U_INTEROP_REVERSE_PINVOKE: return "MonoPInvokeCallback";
+	case R2U_INTEROP_UNMANAGED_ONLY:  return "UnmanagedCallersOnly";
+	default: return "reverse";
+	}
+}
+
+static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
+		bool is_json, bool is_r2, bool quiet) {
+	(void) exe_path;
+	size_t n = 0;
+	R2UnityInterop *items = r2unity_enumerate_reverse_pinvokes (meta, &n);
+	if (items && n > 1) {
+		qsort (items, n, sizeof (R2UnityInterop), interop_cmp);
+	}
+
+	if (is_json) {
+		FILE *f = stdout;
+		fprintf (f, "{\"ok\":true,\"version\":%d,\"reverse_pinvokes\":[", meta->version);
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			if (i) fputc (',', f);
+			fprintf (f, "{\"image\":\"");
+			json_escape (f, it->image_name ? it->image_name : "");
+			fprintf (f, "\",\"method\":\"");
+			json_escape (f, it->name ? it->name : "");
+			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"attribute\":\"%s\",\"confidence\":%u",
+				it->token, it->flags, it->iflags,
+				interop_kind_label (it->kind),
+				(unsigned) it->confidence);
+			fputc ('}', f);
+		}
+		fprintf (f, "]}\n");
+	} else if (is_r2) {
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			if (!it->name) {
+				continue;
+			}
+			char buf[1024];
+			if (it->image_name && *it->image_name) {
+				snprintf (buf, sizeof (buf), "sym.unity.reverse.%s.%s", it->image_name, it->name);
+			} else {
+				snprintf (buf, sizeof (buf), "sym.unity.reverse.%s", it->name);
+			}
+			r_name_filter (buf, -1);
+			printf ("# ReversePInvoke %s [%s]\n", buf, interop_kind_label (it->kind));
+		}
+	} else {
+		if (!quiet) {
+			printf ("# Reverse-P/Invoke methods (native -> managed), metadata wire version %d\n", meta->version);
+			printf ("# IMAGE\tMETHOD\tATTRIBUTE\tFLAGS\tCONFIDENCE\n");
+		}
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			char attrs[128];
+			attrs[0] = 0;
+			build_method_attrs_string (attrs, sizeof (attrs), it->flags);
+			printf ("%s\t%s\t%s\t%s\t%u\n",
+				it->image_name ? it->image_name : "",
+				it->name ? it->name : "",
+				interop_kind_label (it->kind),
+				*attrs ? attrs : "-",
+				(unsigned) it->confidence);
+		}
+		if (!quiet) {
+			printf ("# summary: reverse_pinvokes=%zu\n", n);
 		}
 	}
 
@@ -459,9 +535,10 @@ int main (int argc, char *argv[]) {
 	bool fast = false;
 	bool sbom = false;
 	bool pinvokes = false;
+	bool reverse_pinvokes = false;
 	bool string_literals = false;
 	int opt;
-	while ((opt = getopt (argc, argv, "hjrqfvSPzl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjrqfvSPRzl:a:c:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'r': r2_script = true; break;
@@ -470,6 +547,7 @@ int main (int argc, char *argv[]) {
 		case 'v': debug = true; break;
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
+		case 'R': reverse_pinvokes = true; break;
 		case 'z': string_literals = true; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
@@ -482,9 +560,13 @@ int main (int argc, char *argv[]) {
 			return 1;
 		}
 	}
+	if (pinvokes && reverse_pinvokes) {
+		R_LOG_ERROR ("-P and -R are mutually exclusive");
+		return 1;
+	}
 	if (string_literals) {
-		if (json_one_line || fast || gmp_addr || sbom || pinvokes) {
-			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a/-c, -S or -P");
+		if (json_one_line || fast || gmp_addr || sbom || pinvokes || reverse_pinvokes) {
+			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a/-c, -S, -P or -R");
 			return 1;
 		}
 		if (argc - optind != 1 && argc - optind != 2) {
@@ -528,14 +610,16 @@ int main (int argc, char *argv[]) {
 		return rc;
 	}
 
-	if (pinvokes) {
+	if (pinvokes || reverse_pinvokes) {
 		if (json_one_line && r2_script) {
 			R_LOG_ERROR ("-j and -r are mutually exclusive");
 			r2unity_free_metadata (meta);
 			r_unref (buf);
 			return 1;
 		}
-		int rc = emit_pinvokes (meta, exe_path, json_one_line, r2_script, quiet);
+		int rc = reverse_pinvokes
+			? emit_reverse_pinvokes (meta, exe_path, json_one_line, r2_script, quiet)
+			: emit_pinvokes (meta, exe_path, json_one_line, r2_script, quiet);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		return rc;
