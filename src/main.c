@@ -128,6 +128,8 @@ int main (int argc, char *argv[]) {
 			has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
 		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
 			has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
+		} else if (magic[0] == 'M' && magic[1] == 'Z') {
+			has_ptrs = r2unity_find_method_pointers_pe (meta, exe_path, &method_ptrs);
 		} else {
 			has_ptrs = false;
 		}

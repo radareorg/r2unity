@@ -300,6 +300,7 @@ R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs);
+R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs);
 
 R_API void r2unity_set_debug (bool v);
 R_API bool r2unity_is_debug (void);
