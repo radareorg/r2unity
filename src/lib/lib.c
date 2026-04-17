@@ -1,3 +1,5 @@
+#define R_LOG_ORIGIN "r2unity.lib"
+
 #include "lib.h"
 #include <r_util.h>
 
@@ -423,17 +425,13 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, s
 		return NULL;
 	}
 	if (asize % img_count != 0) {
-		if (g_debug) {
-			fprintf (stderr, "[r2unity] assembliesSize=%"PFMT64u" not divisible by image_count=%u\n",
-				asize, (unsigned) img_count);
-		}
+		R_LOG_WARN ("assembliesSize=%"PFMT64u" not divisible by image_count=%u",
+			asize, (unsigned) img_count);
 		return NULL;
 	}
 	const ut64 entry = asize / img_count;
 	if (entry < 56 || entry > 80) {
-		if (g_debug) {
-			fprintf (stderr, "[r2unity] implausible assembly entry stride %"PFMT64u"\n", entry);
-		}
+		R_LOG_WARN ("implausible assembly entry stride %"PFMT64u, entry);
 		return NULL;
 	}
 	/* Within a row:
@@ -450,9 +448,7 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, s
 	const ut64 aname_size = entry - 16;
 	bool has_hash_value = (aname_size == 52);
 	if (aname_size != 48 && aname_size != 52) {
-		if (g_debug) {
-			fprintf (stderr, "[r2unity] unexpected aname size %"PFMT64u"\n", aname_size);
-		}
+		R_LOG_WARN ("unexpected aname size %"PFMT64u, aname_size);
 		return NULL;
 	}
 	*count = img_count;

@@ -1,3 +1,5 @@
+#define R_LOG_ORIGIN "r2unity"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -65,7 +67,8 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"Usage: %s [options] <executable> <global-metadata.dat>\n"
 		"\n"
 		"Options:\n"
-		"  -j            One-line JSON status (ok/version/types/methods/has_ptrs)\n"
+		"  -j            One-line JSON status, or JSON output with -P\n"
+		"  -r            Emit r2 script commands (flags + comments); pairs with -P\n"
 		"  -q            Quiet mode: omit banner and informational comments\n"
 		"  -l N          Limit emitted entries to N\n"
 		"  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers\n"
@@ -74,7 +77,6 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
 		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
-		"  -F FORMAT     Output format for -P: text|json|r2 (default: text)\n"
 		"  -v            Verbose debug tracing on stderr\n"
 		"  -h            Show this help and exit\n"
 		"\n"
@@ -165,7 +167,7 @@ static int emit_string_literals (R2UnityMetadata *meta, const char *metadata_pat
 	size_t count = 0;
 	Il2CppStringLiteral *lits = r2unity_get_string_literals (meta, &count);
 	if (!lits) {
-		fprintf (stderr, "r2unity: no string literals found in %s\n", metadata_path);
+		R_LOG_ERROR ("no string literals found in %s", metadata_path);
 		return 1;
 	}
 	if (!quiet) {
@@ -202,7 +204,7 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 	size_t ref_count = 0;
 	int32_t *refs = r2unity_get_referenced_assemblies (meta, &ref_count);
 	if (!asms || !asm_count) {
-		fprintf (stderr, "r2unity: unable to decode assemblies table for wire version %d\n",
+		R_LOG_ERROR ("unable to decode assemblies table for wire version %d",
 			meta->version);
 		R_FREE (imgs);
 		R_FREE (asms);
@@ -361,16 +363,13 @@ static int interop_cmp (const void *a, const void *b) {
 }
 
 static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
-		const char *format, bool quiet) {
+		bool is_json, bool is_r2, bool quiet) {
 	(void) exe_path;
 	size_t n = 0;
 	R2UnityInterop *items = r2unity_enumerate_pinvokes (meta, &n);
 	if (items && n > 1) {
 		qsort (items, n, sizeof (R2UnityInterop), interop_cmp);
 	}
-
-	const bool is_json = format && !strcmp (format, "json");
-	const bool is_r2 = format && !strcmp (format, "r2");
 
 	if (is_json) {
 		FILE *f = stdout;
@@ -451,6 +450,7 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 
 int main (int argc, char *argv[]) {
 	bool json_one_line = false;
+	bool r2_script = false;
 	bool quiet = false;
 	bool debug = false;
 	long limit = -1;
@@ -460,18 +460,17 @@ int main (int argc, char *argv[]) {
 	bool sbom = false;
 	bool pinvokes = false;
 	bool string_literals = false;
-	const char *format = "text";
 	int opt;
-	while ((opt = getopt (argc, argv, "hjqfvSPzl:a:c:F:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjrqfvSPzl:a:c:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
+		case 'r': r2_script = true; break;
 		case 'q': quiet = true; break;
 		case 'f': fast = true; break;
 		case 'v': debug = true; break;
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
 		case 'z': string_literals = true; break;
-		case 'F': format = optarg; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
 		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
@@ -485,7 +484,7 @@ int main (int argc, char *argv[]) {
 	}
 	if (string_literals) {
 		if (json_one_line || fast || gmp_addr || sbom || pinvokes) {
-			fprintf (stderr, "r2unity: -z cannot be combined with -j, -f, -a/-c, -S or -P\n");
+			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a/-c, -S or -P");
 			return 1;
 		}
 		if (argc - optind != 1 && argc - optind != 2) {
@@ -517,7 +516,7 @@ int main (int argc, char *argv[]) {
 	r2unity_set_debug (debug);
 	R2UnityMetadata *meta = r2unity_parse_metadata (buf);
 	if (!meta) {
-		fprintf (stderr, "Failed to parse metadata\n");
+		R_LOG_ERROR ("Failed to parse metadata");
 		r_unref (buf);
 		return 1;
 	}
@@ -530,13 +529,13 @@ int main (int argc, char *argv[]) {
 	}
 
 	if (pinvokes) {
-		if (strcmp (format, "text") && strcmp (format, "json") && strcmp (format, "r2")) {
-			fprintf (stderr, "r2unity: unknown -F format %s (expected text|json|r2)\n", format);
+		if (json_one_line && r2_script) {
+			R_LOG_ERROR ("-j and -r are mutually exclusive");
 			r2unity_free_metadata (meta);
 			r_unref (buf);
 			return 1;
 		}
-		int rc = emit_pinvokes (meta, exe_path, format, quiet);
+		int rc = emit_pinvokes (meta, exe_path, json_one_line, r2_script, quiet);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		return rc;
