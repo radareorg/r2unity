@@ -80,6 +80,7 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  -c N          Read N pointer entries (pair with -a)\n"
 		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
+		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
 		"  -F FORMAT     Output format for -P: text|json|r2 (default: text)\n"
 		"  -v            Verbose debug tracing on stderr\n"
 		"  -h            Show this help and exit\n"
@@ -133,6 +134,69 @@ static void json_escape (FILE *f, const char *s) {
 			else fputc (c, f);
 		}
 	}
+}
+
+static void print_escaped_literal (FILE *f, const ut8 *buf, size_t len) {
+	for (size_t i = 0; i < len; i++) {
+		unsigned char c = buf[i];
+		switch (c) {
+		case '\\':
+			fputs ("\\\\", f);
+			break;
+		case '"':
+			fputs ("\\\"", f);
+			break;
+		case '\n':
+			fputs ("\\n", f);
+			break;
+		case '\r':
+			fputs ("\\r", f);
+			break;
+		case '\t':
+			fputs ("\\t", f);
+			break;
+		default:
+			if (c >= 0x20 && c < 0x7f) {
+				fputc (c, f);
+			} else {
+				fprintf (f, "\\x%02x", c);
+			}
+			break;
+		}
+	}
+}
+
+static int emit_string_literals (R2UnityMetadata *meta, const char *metadata_path, bool quiet, long limit) {
+	size_t count = 0;
+	Il2CppStringLiteral *lits = r2unity_get_string_literals (meta, &count);
+	if (!lits) {
+		fprintf (stderr, "r2unity: no string literals found in %s\n", metadata_path);
+		return 1;
+	}
+	if (!quiet) {
+		printf ("# managed string literals from %s\n", metadata_path);
+		printf ("# idx\tdata_off\tlen\ttext\n");
+	}
+	size_t max = count;
+	if (limit >= 0 && (size_t) limit < max) {
+		max = (size_t) limit;
+	}
+	for (size_t i = 0; i < max; i++) {
+		ut8 *bytes = NULL;
+		size_t len = 0;
+		if (!r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
+			printf ("%zu\t0x%x\t%u\t<invalid>\n",
+				i, meta->stringLiteralDataOffset + lits[i].dataIndex, lits[i].length);
+			continue;
+		}
+		printf ("%zu\t0x%x\t%u\t\"", i,
+			meta->stringLiteralDataOffset + lits[i].dataIndex, lits[i].length);
+		print_escaped_literal (stdout, bytes, len);
+		printf ("\"\n");
+		R_FREE (bytes);
+	}
+	R_FREE (lits);
+	return 0;
 }
 
 static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *metadata_path) {
@@ -400,9 +464,10 @@ int main (int argc, char *argv[]) {
 	bool fast = false;
 	bool sbom = false;
 	bool pinvokes = false;
+	bool string_literals = false;
 	const char *format = "text";
 	int opt;
-	while ((opt = getopt (argc, argv, "hjqfvSPl:a:c:F:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjqfvSPzl:a:c:F:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'q': quiet = true; break;
@@ -410,6 +475,7 @@ int main (int argc, char *argv[]) {
 		case 'v': debug = true; break;
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
+		case 'z': string_literals = true; break;
 		case 'F': format = optarg; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
@@ -422,13 +488,29 @@ int main (int argc, char *argv[]) {
 			return 1;
 		}
 	}
-	if (argc - optind != 2) {
+	if (string_literals) {
+		if (json_one_line || fast || gmp_addr || sbom || pinvokes) {
+			fprintf (stderr, "r2unity: -z cannot be combined with -j, -f, -a/-c, -S or -P\n");
+			return 1;
+		}
+		if (argc - optind != 1 && argc - optind != 2) {
+			print_usage (stderr, argv[0]);
+			return 1;
+		}
+	} else if (argc - optind != 2) {
 		print_usage (stderr, argv[0]);
 		return 1;
 	}
 
-	const char *exe_path = argv[optind];
-	const char *metadata_path = argv[optind + 1];
+	const char *exe_path = NULL;
+	const char *metadata_path = NULL;
+	if (string_literals && argc - optind == 1) {
+		exe_path = "";
+		metadata_path = argv[optind];
+	} else {
+		exe_path = argv[optind];
+		metadata_path = argv[optind + 1];
+	}
 
 	RBuffer *buf = r_buf_new_file (metadata_path, O_RDONLY, 0);
 	if (!buf) {
@@ -460,6 +542,13 @@ int main (int argc, char *argv[]) {
 			return 1;
 		}
 		int rc = emit_pinvokes (meta, exe_path, format, quiet);
+		r2unity_free_metadata (meta);
+		r_unref (buf);
+		return rc;
+	}
+
+	if (string_literals) {
+		int rc = emit_string_literals (meta, metadata_path, quiet, limit);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		return rc;

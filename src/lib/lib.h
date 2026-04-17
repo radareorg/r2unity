@@ -229,11 +229,18 @@ typedef struct {
 	int32_t stringSize;
 	uint32_t stringLiteralOffset;
 	int32_t stringLiteralSize;
+	uint32_t stringLiteralDataOffset;
+	int32_t stringLiteralDataSize;
 	uint32_t methodsOffset;
 	int32_t methodsSize;
 	uint32_t typeDefinitionsOffset;
 	int32_t typeDefinitionsSize;
 } R2UnityMetadata;
+
+typedef struct {
+	uint32_t length;
+	uint32_t dataIndex;
+} Il2CppStringLiteral;
 
 typedef struct {
 	uint32_t nameIndex;
@@ -344,6 +351,8 @@ typedef struct {
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf);
 R_API void r2unity_free_metadata (R2UnityMetadata *meta);
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
+R_API Il2CppStringLiteral *r2unity_get_string_literals (R2UnityMetadata *meta, size_t *count);
+R_API bool r2unity_read_string_literal (R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count);

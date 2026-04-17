@@ -66,6 +66,8 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		meta->stringSize = meta->header.v24.stringSize;
 		meta->stringLiteralOffset = meta->header.v24.stringLiteralOffset;
 		meta->stringLiteralSize = meta->header.v24.stringLiteralSize;
+		meta->stringLiteralDataOffset = meta->header.v24.stringLiteralDataOffset;
+		meta->stringLiteralDataSize = meta->header.v24.stringLiteralDataSize;
 		meta->methodsOffset = meta->header.v24.methodsOffset;
 		meta->methodsSize = meta->header.v24.methodsSize;
 		meta->typeDefinitionsOffset = meta->header.v24.typeDefinitionsOffset;
@@ -75,6 +77,8 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		meta->stringSize = meta->header.v27.stringSize;
 		meta->stringLiteralOffset = meta->header.v27.stringLiteralOffset;
 		meta->stringLiteralSize = meta->header.v27.stringLiteralSize;
+		meta->stringLiteralDataOffset = meta->header.v27.stringLiteralDataOffset;
+		meta->stringLiteralDataSize = meta->header.v27.stringLiteralDataSize;
 		meta->methodsOffset = meta->header.v27.methodsOffset;
 		meta->methodsSize = meta->header.v27.methodsSize;
 		meta->typeDefinitionsOffset = meta->header.v27.typeDefinitionsOffset;
@@ -84,6 +88,8 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		meta->stringSize = meta->header.v29.stringSize;
 		meta->stringLiteralOffset = meta->header.v29.stringLiteralOffset;
 		meta->stringLiteralSize = meta->header.v29.stringLiteralSize;
+		meta->stringLiteralDataOffset = meta->header.v29.stringLiteralDataOffset;
+		meta->stringLiteralDataSize = meta->header.v29.stringLiteralDataSize;
 		meta->methodsOffset = meta->header.v29.methodsOffset;
 		meta->methodsSize = meta->header.v29.methodsSize;
 		meta->typeDefinitionsOffset = meta->header.v29.typeDefinitionsOffset;
@@ -138,6 +144,67 @@ R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index) {
 		}
 	}
 	return str;
+}
+
+R_API Il2CppStringLiteral *r2unity_get_string_literals (R2UnityMetadata *meta, size_t *count) {
+	if (!meta || !count) {
+		return NULL;
+	}
+	*count = 0;
+	if (!meta->string_literals || meta->stringLiteralSize < 8 || (meta->stringLiteralSize % 8) != 0) {
+		return NULL;
+	}
+	*count = (size_t) ((ut64) meta->stringLiteralSize / 8);
+	Il2CppStringLiteral *lits = R_NEWS (Il2CppStringLiteral, *count);
+	if (!lits) {
+		*count = 0;
+		return NULL;
+	}
+	ut8 *buf = R_NEWS (ut8, (ut64) meta->stringLiteralSize);
+	if (!buf) {
+		R_FREE (lits);
+		*count = 0;
+		return NULL;
+	}
+	if (r_buf_read_at (meta->string_literals, 0, buf, (ut64) meta->stringLiteralSize) != (st64) meta->stringLiteralSize) {
+		R_FREE (buf);
+		R_FREE (lits);
+		*count = 0;
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * 8;
+		lits[i].length = r_read_le32 (p + 0);
+		lits[i].dataIndex = r_read_le32 (p + 4);
+	}
+	R_FREE (buf);
+	return lits;
+}
+
+R_API bool r2unity_read_string_literal (R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len) {
+	if (!meta || !lit || !out_bytes || !out_len) {
+		return false;
+	}
+	*out_bytes = NULL;
+	*out_len = 0;
+	if (lit->length == 0) {
+		return true;
+	}
+	ut64 end = (ut64) lit->dataIndex + (ut64) lit->length;
+	if (end > (ut64) meta->stringLiteralDataSize) {
+		return false;
+	}
+	ut8 *bytes = R_NEWS (ut8, lit->length);
+	if (!bytes) {
+		return false;
+	}
+	if (r_buf_read_at (meta->buf, (ut64) meta->stringLiteralDataOffset + lit->dataIndex, bytes, lit->length) != (st64) lit->length) {
+		R_FREE (bytes);
+		return false;
+	}
+	*out_bytes = bytes;
+	*out_len = lit->length;
+	return true;
 }
 
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count) {
