@@ -297,6 +297,166 @@ R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *
 	return imgs;
 }
 
+static void get_assemblies_section (R2UnityMetadata *meta, ut64 *out_off, ut64 *out_size) {
+	if (meta->version < 27) {
+		*out_off = (ut64) meta->header.v24.assembliesOffset;
+		*out_size = (ut64) meta->header.v24.assembliesSize;
+	} else if (meta->version < 29) {
+		*out_off = (ut64) meta->header.v27.assembliesOffset;
+		*out_size = (ut64) meta->header.v27.assembliesSize;
+	} else {
+		*out_off = (ut64) meta->header.v29.assembliesOffset;
+		*out_size = (ut64) meta->header.v29.assembliesSize;
+	}
+}
+
+static void get_referenced_section (R2UnityMetadata *meta, ut64 *out_off, ut64 *out_size) {
+	if (meta->version < 27) {
+		*out_off = (ut64) meta->header.v24.referencedAssembliesOffset;
+		*out_size = (ut64) meta->header.v24.referencedAssembliesSize;
+	} else if (meta->version < 29) {
+		*out_off = (ut64) meta->header.v27.referencedAssembliesOffset;
+		*out_size = (ut64) meta->header.v27.referencedAssembliesSize;
+	} else {
+		*out_off = (ut64) meta->header.v29.referencedAssembliesOffset;
+		*out_size = (ut64) meta->header.v29.referencedAssembliesSize;
+	}
+}
+
+R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count) {
+	if (!meta || !count) {
+		return NULL;
+	}
+	*count = 0;
+	ut64 aoff = 0, asize = 0;
+	get_assemblies_section (meta, &aoff, &asize);
+	if (!asize) {
+		return NULL;
+	}
+	/* Probe the per-row stride by joining against the images table:
+	 * there is one assembly per image on every wire version. Expected
+	 * strides are 56, 60, 64 or 68 bytes (see doc/sbom.md §4.1). */
+	size_t img_count = 0;
+	Il2CppImageDefinition *imgs = r2unity_get_images (meta, &img_count);
+	R_FREE (imgs);
+	if (!img_count) {
+		return NULL;
+	}
+	if (asize % img_count != 0) {
+		if (g_debug) {
+			fprintf (stderr, "[r2unity] assembliesSize=%"PFMT64u" not divisible by image_count=%u\n",
+				asize, (unsigned) img_count);
+		}
+		return NULL;
+	}
+	const ut64 entry = asize / img_count;
+	if (entry < 56 || entry > 80) {
+		if (g_debug) {
+			fprintf (stderr, "[r2unity] implausible assembly entry stride %"PFMT64u"\n", entry);
+		}
+		return NULL;
+	}
+	/* Within a row:
+	 *   [0..4)    imageIndex
+	 *   [4..8)    token (wire >= 24.1) OR customAttributeIndex (wire <= 24.0)
+	 *   [8..12)   referencedAssemblyStart (wire >= 20)
+	 *   [12..16)  referencedAssemblyCount
+	 *   [16..entry) Il2CppAssemblyNameDefinition
+	 * aname size is (entry - 16): 48 when hashValueIndex dropped (>=24.4),
+	 * 52 when it is still present (<=24.3). Layout within aname:
+	 *   nameIndex, cultureIndex, [hashValueIndex if 52], publicKeyIndex,
+	 *   hash_alg, hash_len, flags, major, minor, build, revision,
+	 *   public_key_token[8]. */
+	const ut64 aname_size = entry - 16;
+	bool has_hash_value = (aname_size == 52);
+	if (aname_size != 48 && aname_size != 52) {
+		if (g_debug) {
+			fprintf (stderr, "[r2unity] unexpected aname size %"PFMT64u"\n", aname_size);
+		}
+		return NULL;
+	}
+	*count = img_count;
+	Il2CppAssemblyDefinition *out = R_NEWS0 (Il2CppAssemblyDefinition, *count);
+	if (!out) {
+		return NULL;
+	}
+	ut8 *buf = R_NEWS (ut8, asize);
+	if (!buf) {
+		R_FREE (out);
+		return NULL;
+	}
+	if (r_buf_read_at (meta->buf, aoff, buf, asize) != (st64) asize) {
+		R_FREE (buf);
+		R_FREE (out);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * entry;
+		out[i].image_index = (int32_t) r_read_le32 (p + 0);
+		out[i].token = (meta->version >= 24) ? r_read_le32 (p + 4) : 0;
+		out[i].referenced_start = (int32_t) r_read_le32 (p + 8);
+		out[i].referenced_count = (int32_t) r_read_le32 (p + 12);
+		const ut8 *an = p + 16;
+		out[i].aname.name_idx = r_read_le32 (an + 0);
+		out[i].aname.culture_idx = r_read_le32 (an + 4);
+		ut64 o;
+		if (has_hash_value) {
+			out[i].aname.hash_value_idx = r_read_le32 (an + 8);
+			out[i].aname.public_key_idx = r_read_le32 (an + 12);
+			o = 16;
+		} else {
+			out[i].aname.hash_value_idx = 0;
+			out[i].aname.public_key_idx = r_read_le32 (an + 8);
+			o = 12;
+		}
+		out[i].aname.hash_alg = r_read_le32 (an + o); o += 4;
+		out[i].aname.hash_len = (int32_t) r_read_le32 (an + o); o += 4;
+		out[i].aname.flags = r_read_le32 (an + o); o += 4;
+		out[i].aname.major = (int32_t) r_read_le32 (an + o); o += 4;
+		out[i].aname.minor = (int32_t) r_read_le32 (an + o); o += 4;
+		out[i].aname.build = (int32_t) r_read_le32 (an + o); o += 4;
+		out[i].aname.revision = (int32_t) r_read_le32 (an + o); o += 4;
+		memcpy (out[i].aname.public_key_token, an + o, 8);
+	}
+	R_FREE (buf);
+	return out;
+}
+
+R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count) {
+	if (!meta || !count) {
+		return NULL;
+	}
+	*count = 0;
+	ut64 roff = 0, rsize = 0;
+	get_referenced_section (meta, &roff, &rsize);
+	if (rsize < 4 || (rsize % 4) != 0) {
+		return NULL;
+	}
+	*count = (size_t) (rsize / 4);
+	int32_t *out = R_NEWS (int32_t, *count);
+	if (!out) {
+		*count = 0;
+		return NULL;
+	}
+	ut8 *buf = R_NEWS (ut8, rsize);
+	if (!buf) {
+		R_FREE (out);
+		*count = 0;
+		return NULL;
+	}
+	if (r_buf_read_at (meta->buf, roff, buf, rsize) != (st64) rsize) {
+		R_FREE (buf);
+		R_FREE (out);
+		*count = 0;
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		out[i] = (int32_t) r_read_le32 (buf + i * 4);
+	}
+	R_FREE (buf);
+	return out;
+}
+
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs) {
 	(void) meta; (void) exe_path; (void) addr; (void) count; (void) out_ptrs;
 	return false;

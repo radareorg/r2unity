@@ -56,7 +56,189 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 }
 
 static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
+	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-S] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
+}
+
+static const char *unity_range_from_wire (int wire) {
+	switch (wire) {
+	case 21: return "5.3.0-5.3.5";
+	case 22: return "5.3.6-5.4";
+	case 23: return "5.5";
+	case 24: return "5.6-2020.1";
+	case 27: return "2020.2-2021.3";
+	case 29: return "2022.1-2022.3";
+	case 31: return "2023.x-6000.x";
+	default: return "unknown";
+	}
+}
+
+static void json_escape (FILE *f, const char *s) {
+	for (; s && *s; s++) {
+		unsigned char c = (unsigned char) *s;
+		switch (c) {
+		case '"':  fputs ("\\\"", f); break;
+		case '\\': fputs ("\\\\", f); break;
+		case '\b': fputs ("\\b", f); break;
+		case '\f': fputs ("\\f", f); break;
+		case '\n': fputs ("\\n", f); break;
+		case '\r': fputs ("\\r", f); break;
+		case '\t': fputs ("\\t", f); break;
+		default:
+			if (c < 0x20) fprintf (f, "\\u%04x", c);
+			else fputc (c, f);
+		}
+	}
+}
+
+static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *metadata_path) {
+	size_t img_count = 0;
+	Il2CppImageDefinition *imgs = r2unity_get_images (meta, &img_count);
+	size_t asm_count = 0;
+	Il2CppAssemblyDefinition *asms = r2unity_get_assemblies (meta, &asm_count);
+	size_t ref_count = 0;
+	int32_t *refs = r2unity_get_referenced_assemblies (meta, &ref_count);
+	if (!asms || !asm_count) {
+		fprintf (stderr, "r2unity: unable to decode assemblies table for wire version %d\n",
+			meta->version);
+		R_FREE (imgs);
+		R_FREE (asms);
+		R_FREE (refs);
+		return 1;
+	}
+
+	FILE *f = stdout;
+	fprintf (f, "{\n");
+	fprintf (f, "  \"bomFormat\": \"CycloneDX\",\n");
+	fprintf (f, "  \"specVersion\": \"1.5\",\n");
+	fprintf (f, "  \"version\": 1,\n");
+	fprintf (f, "  \"metadata\": {\n");
+	fprintf (f, "    \"tools\": {\n");
+	fprintf (f, "      \"components\": [\n");
+	fprintf (f, "        { \"type\": \"application\", \"name\": \"r2unity\" }\n");
+	fprintf (f, "      ]\n");
+	fprintf (f, "    },\n");
+	fprintf (f, "    \"component\": {\n");
+	fprintf (f, "      \"type\": \"application\",\n");
+	fprintf (f, "      \"name\": \"");
+	json_escape (f, exe_path ? exe_path : "unity-build");
+	fprintf (f, "\",\n");
+	fprintf (f, "      \"version\": \"%s\",\n", unity_range_from_wire (meta->version));
+	fprintf (f, "      \"properties\": [\n");
+	fprintf (f, "        { \"name\": \"unity.metadata.path\",         \"value\": \"");
+	json_escape (f, metadata_path);
+	fprintf (f, "\" },\n");
+	fprintf (f, "        { \"name\": \"unity.metadata.wire_version\", \"value\": \"%d\" },\n", meta->version);
+	fprintf (f, "        { \"name\": \"unity.metadata.confidence\",   \"value\": \"range\" }\n");
+	fprintf (f, "      ]\n");
+	fprintf (f, "    }\n");
+	fprintf (f, "  },\n");
+
+	/* managed components */
+	fprintf (f, "  \"components\": [\n");
+	for (size_t i = 0; i < asm_count; i++) {
+		Il2CppAssemblyDefinition *a = &asms[i];
+		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
+		char *culture = (char *) r2unity_get_string (meta, a->aname.culture_idx);
+		const char *nm = name ? name : "";
+		const char *cl = (culture && *culture) ? culture : "neutral";
+
+		/* image (DLL filename) via a->image_index */
+		const char *img = "";
+		char *img_name_owned = NULL;
+		if (imgs && a->image_index >= 0 && (size_t) a->image_index < img_count) {
+			img_name_owned = (char *) r2unity_get_string (meta, imgs[a->image_index].nameIndex);
+			if (img_name_owned) img = img_name_owned;
+		}
+
+		char pkt_hex[17];
+		int empty = 1;
+		for (int k = 0; k < 8; k++) if (a->aname.public_key_token[k]) { empty = 0; break; }
+		if (empty) {
+			strcpy (pkt_hex, "null");
+		} else {
+			snprintf (pkt_hex, sizeof (pkt_hex), "%02x%02x%02x%02x%02x%02x%02x%02x",
+				a->aname.public_key_token[0], a->aname.public_key_token[1],
+				a->aname.public_key_token[2], a->aname.public_key_token[3],
+				a->aname.public_key_token[4], a->aname.public_key_token[5],
+				a->aname.public_key_token[6], a->aname.public_key_token[7]);
+		}
+
+		fprintf (f, "    {\n");
+		fprintf (f, "      \"bom-ref\": \"asm:");
+		json_escape (f, nm);
+		fprintf (f, ":%d.%d.%d.%d\",\n",
+			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, "      \"type\": \"library\",\n");
+		fprintf (f, "      \"name\": \"");
+		json_escape (f, nm);
+		fprintf (f, "\",\n");
+		fprintf (f, "      \"version\": \"%d.%d.%d.%d\",\n",
+			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, "      \"purl\": \"pkg:generic/unity/");
+		json_escape (f, nm);
+		fprintf (f, "@%d.%d.%d.%d\",\n",
+			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, "      \"properties\": [\n");
+		fprintf (f, "        { \"name\": \"dotnet.culture\",          \"value\": \"");
+		json_escape (f, cl);
+		fprintf (f, "\" },\n");
+		fprintf (f, "        { \"name\": \"dotnet.public_key_token\", \"value\": ");
+		if (empty) fprintf (f, "null"); else fprintf (f, "\"%s\"", pkt_hex);
+		fprintf (f, " },\n");
+		fprintf (f, "        { \"name\": \"dotnet.hash_alg\",         \"value\": \"0x%08x\" },\n", a->aname.hash_alg);
+		fprintf (f, "        { \"name\": \"dotnet.flags\",            \"value\": \"0x%08x\" },\n", a->aname.flags);
+		fprintf (f, "        { \"name\": \"il2cpp.image\",            \"value\": \"");
+		json_escape (f, img);
+		fprintf (f, "\" },\n");
+		fprintf (f, "        { \"name\": \"il2cpp.image_index\",      \"value\": \"%d\" },\n", a->image_index);
+		fprintf (f, "        { \"name\": \"il2cpp.token\",            \"value\": \"0x%08x\" }\n", a->token);
+		fprintf (f, "      ]\n");
+		fprintf (f, "    }%s\n", (i + 1 < asm_count) ? "," : "");
+
+		free (name);
+		free (culture);
+		free (img_name_owned);
+	}
+	fprintf (f, "  ],\n");
+
+	/* dependency edges from referencedAssemblies */
+	fprintf (f, "  \"dependencies\": [\n");
+	bool first_dep = true;
+	for (size_t i = 0; i < asm_count; i++) {
+		Il2CppAssemblyDefinition *a = &asms[i];
+		if (a->referenced_count <= 0 || a->referenced_start < 0) continue;
+		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) continue;
+		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
+		const char *nm = name ? name : "";
+		if (!first_dep) fprintf (f, ",\n");
+		first_dep = false;
+		fprintf (f, "    {\n      \"ref\": \"asm:");
+		json_escape (f, nm);
+		fprintf (f, ":%d.%d.%d.%d\",\n      \"dependsOn\": [",
+			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		bool first_ref = true;
+		for (int k = 0; k < a->referenced_count; k++) {
+			int32_t ridx = refs[a->referenced_start + k];
+			if (ridx < 0 || (size_t) ridx >= asm_count) continue;
+			Il2CppAssemblyDefinition *r = &asms[ridx];
+			char *rname = (char *) r2unity_get_string (meta, r->aname.name_idx);
+			if (!first_ref) fprintf (f, ",");
+			first_ref = false;
+			fprintf (f, "\n        \"asm:");
+			json_escape (f, rname ? rname : "");
+			fprintf (f, ":%d.%d.%d.%d\"",
+				r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
+			free (rname);
+		}
+		fprintf (f, "\n      ]\n    }");
+		free (name);
+	}
+	fprintf (f, "\n  ]\n}\n");
+
+	R_FREE (imgs);
+	R_FREE (asms);
+	R_FREE (refs);
+	return 0;
 }
 
 int main (int argc, char *argv[]) {
@@ -67,13 +249,15 @@ int main (int argc, char *argv[]) {
 	ut64 gmp_addr = 0;
 	size_t gmp_count = 0;
 	bool fast = false;
+	bool sbom = false;
 	int opt;
-	while ((opt = getopt (argc, argv, "jqfvl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "jqfvSl:a:c:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'q': quiet = true; break;
 		case 'f': fast = true; break;
 		case 'v': debug = true; break;
+		case 'S': sbom = true; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
 		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
@@ -103,6 +287,13 @@ int main (int argc, char *argv[]) {
 		fprintf (stderr, "Failed to parse metadata\n");
 		r_unref (buf);
 		return 1;
+	}
+
+	if (sbom) {
+		int rc = emit_sbom (meta, exe_path, metadata_path);
+		r2unity_free_metadata (meta);
+		r_unref (buf);
+		return rc;
 	}
 
 	size_t type_count = 0;

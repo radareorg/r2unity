@@ -290,12 +290,37 @@ typedef struct {
 	uint32_t customAttributeCount;
 } Il2CppImageDefinition;
 
+typedef struct {
+	uint32_t name_idx;
+	uint32_t culture_idx;
+	uint32_t public_key_idx;
+	uint32_t hash_value_idx; /* 0 when not present on disk (wire >= 24.4) */
+	uint32_t hash_alg;
+	int32_t  hash_len;
+	uint32_t flags;
+	int32_t  major;
+	int32_t  minor;
+	int32_t  build;
+	int32_t  revision;
+	uint8_t  public_key_token[8];
+} Il2CppAssemblyNameDefinition;
+
+typedef struct {
+	int32_t  image_index;
+	uint32_t token;            /* 0 when not present (wire <= 24.0) */
+	int32_t  referenced_start;
+	int32_t  referenced_count;
+	Il2CppAssemblyNameDefinition aname;
+} Il2CppAssemblyDefinition;
+
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf);
 R_API void r2unity_free_metadata (R2UnityMetadata *meta);
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count);
+R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count);
+R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count);
 /* Simplified API: use format-specific finders, or manual read stub. */
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
