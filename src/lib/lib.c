@@ -14,6 +14,43 @@ R_API bool r2unity_is_debug (void) {
 }
 
 
+/* Detect v24.0 vs v24.1+ (both land on disk as version==24).
+ *
+ * At v24.1 the ImageDefinition row grew by 8 bytes (added
+ * customAttributeStart/Count), so imagesSize is a multiple of 40 on v24.1+
+ * and 32 on v24.0. When imagesSize is divisible by both (a multiple of 160),
+ * probe the 4 bytes at offset 40: under v24.1+ that is row 1's nameIndex
+ * (a valid string-pool offset); under v24.0 it is mid-row.
+ *
+ * Fixing row layouts for v24.0 (larger TypeDefinition, MethodDefinition,
+ * ImageDefinition) is tracked separately; reject for now so decoders don't
+ * silently return wrong offsets. */
+static bool is_v24_0 (R2UnityMetadata *meta) {
+	ut64 ioff = meta->header.v24.imagesOffset;
+	ut64 isize = meta->header.v24.imagesSize;
+	if (!isize) {
+		return false;
+	}
+	bool div40 = (isize % 40) == 0;
+	bool div32 = (isize % 32) == 0;
+	if (div40 && !div32) {
+		return false;
+	}
+	if (div32 && !div40) {
+		return true;
+	}
+	if (isize >= 44) {
+		ut8 probe[4];
+		if (r_buf_read_at (meta->buf, ioff + 40, probe, 4) == 4) {
+			uint32_t name_idx = r_read_le32 (probe);
+			if (name_idx < (uint32_t) meta->stringSize) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 	if (!buf) {
 		return NULL;
@@ -96,6 +133,13 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		meta->methodsSize = meta->header.v29.methodsSize;
 		meta->typeDefinitionsOffset = meta->header.v29.typeDefinitionsOffset;
 		meta->typeDefinitionsSize = meta->header.v29.typeDefinitionsSize;
+	}
+	if (meta->version == 24 && is_v24_0 (meta)) {
+		R_LOG_ERROR ("v24.0 metadata (Unity 5.6..2018.2) not supported: "
+			"TypeDefinition/MethodDefinition/ImageDefinition row layouts "
+			"differ from v24.1+ and would silently decode wrong offsets");
+		r2unity_free_metadata (meta);
+		return NULL;
 	}
 	meta->strings = r_buf_new_slice (buf, meta->stringOffset, meta->stringSize);
 	meta->string_literals = r_buf_new_slice (buf, meta->stringLiteralOffset, meta->stringLiteralSize);

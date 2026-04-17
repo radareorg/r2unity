@@ -917,9 +917,13 @@ Unity-release → wire-version → sub-version mapping.
 	`Il2CppMethodDefinition`, aligning with ECMA-335's return-value
 	param-row model.
 
-r2unity's current acceptance band is **v24..v31**, with dedicated
+r2unity's current acceptance band is **v24.1..v31**, with dedicated
 handling only for the v24.1+ table strides and the v31
-`returnParameterToken` insertion.
+`returnParameterToken` insertion. Since the on-disk `version` field is
+`24` for both v24.0 and v24.1+, the parser probes the image-row stride
+(32 B on v24.0, 40 B on v24.1+) and rejects v24.0 explicitly to avoid
+silent mis-decoding of TypeDefinition/MethodDefinition/ImageDefinition
+rows.
 
 ## 5. How the parser is wired in r2unity
 

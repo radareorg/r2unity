@@ -119,12 +119,16 @@ if (version < 24 || version > 31)  return NULL;
 if (version < 27)       header_size = sizeof (v24);
 else if (version < 29)  header_size = sizeof (v27);
 else                    header_size = sizeof (v29);   /* 29, 30, 31 */
+/* After normalizing header fields, reject v24.0 via image-stride probe. */
+if (version == 24 && is_v24_0 (meta))  return NULL;
 ```
 
 | Wire version | Status                            | Reality                                                                                    |
 |--------------|-----------------------------------|--------------------------------------------------------------------------------------------|
 | 16, 19, 20   | Rejected                          | Pre-Unity-5.5 builds, effectively extinct.                                                 |
 | 21, 22, 23   | Rejected                          | Unity 5.3 – 5.5 IPAs exist but are rare.                                                   |
+| 24.0         | Rejected after sub-version probe  | On-disk `version` is 24 for both v24.0 and v24.1+. The parser probes image-row stride (32 B vs 40 B) and rejects v24.0 with an explicit error; TypeDefinition/MethodDefinition/ImageDefinition rows would otherwise decode at wrong offsets. |
+| 24.1 – 24.5  | Accepted via `_v24` header struct | Row decoders target the v24.1+ strides.                                                    |
 | 27           | Accepted via `_v27` header struct | Header correct. Row decoders still assume the v24.1+ layout; v27.2 RGCTX widening not handled (only affects RGCTX which is unused). |
 | 29           | Accepted via `_v29` header struct | Header correct. Method rows decoded as 32 B. Reverse-P/Invoke BLOB path is the only v29-specific code. |
 | 30           | Accepted                          | Never shipped on disk; dead slot, safe.                                                    |
