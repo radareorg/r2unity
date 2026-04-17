@@ -313,6 +313,34 @@ typedef struct {
 	Il2CppAssemblyNameDefinition aname;
 } Il2CppAssemblyDefinition;
 
+/* ECMA-335 MethodAttributes.PinvokeImpl — bit 13 on methodDef.flags */
+#define IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL 0x2000
+
+enum {
+	R2U_INTEROP_PINVOKE         = 1, /* managed -> native, [DllImport] */
+	R2U_INTEROP_REVERSE_PINVOKE = 2, /* native -> managed, [MonoPInvokeCallback] */
+	R2U_INTEROP_UNMANAGED_ONLY  = 3, /* [UnmanagedCallersOnly] (.NET 5+) */
+	R2U_INTEROP_INTEROP_DATA    = 4  /* Il2CppInteropData entry (opaque) */
+};
+
+/* A single P/Invoke or reverse-P/Invoke entry.
+ * String fields are owned by the struct and freed by r2unity_free_interop. */
+typedef struct {
+	int32_t  method_index;   /* -1 for anonymous native wrapper */
+	uint32_t token;          /* 0 if not applicable */
+	int32_t  image_index;    /* -1 if unresolved */
+	uint16_t flags;          /* copy of methodDef.flags */
+	uint16_t iflags;         /* copy of methodDef.iflags */
+	char    *name;           /* "Ns.Class.Method" or NULL */
+	char    *image_name;     /* "Assembly-CSharp" or NULL */
+	char    *dll_name;       /* NULL if unrecovered */
+	char    *entry_name;     /* NULL if unrecovered (=> method name) */
+	ut64     wrapper_va;     /* 0 if no native wrapper */
+	uint32_t wrapper_index;  /* global reversePInvokeWrappers index, or UINT32_MAX */
+	uint8_t  kind;           /* R2U_INTEROP_* */
+	uint8_t  confidence;     /* 0..100 */
+} R2UnityInterop;
+
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf);
 R_API void r2unity_free_metadata (R2UnityMetadata *meta);
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
@@ -321,6 +349,8 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count);
 R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count);
 R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count);
+R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t *count);
+R_API void r2unity_free_interop (R2UnityInterop *items, size_t count);
 /* Simplified API: use format-specific finders, or manual read stub. */
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);

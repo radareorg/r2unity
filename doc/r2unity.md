@@ -58,6 +58,15 @@ full radare2 core.
 
 ---
 
+## 1.1. Files
+
+| OS / target | Native file required | Metadata file required | Typical metadata location relative to binary | Current status in docs |
+|---|---|---|---|---|
+| Android | libil2cpp.so | global-metadata.dat | ../../assets/bin/Data/Managed/Metadata/global-metadata.dat | Main supported target; arm64 works best (doc/r2unity.md:419, doc/r2unity.md:469) |
+| iOS | UnityFramework | global-metadata.dat | ../../Data/Managed/Metadata/global-metadata.dat | Main supported target for ARM64 Mach-O (doc/r2unity.md:389, doc/r2unity.md:470) |
+| macOS standalone | GameAssembly.dylib | global-metadata.dat | ../Resources/Data/il2cpp_data/Metadata/global- metadata.dat | Mach-O path technically works, but CLI auto-discovery is not wired yet (doc/r2unity.md:447,
+| Windows standalone | GameAssembly.dll | global-metadata.dat | *_Data/il2cpp_data/Metadata/global- metadata.dat | Good |
+
 ## 2. `global-metadata.dat` parser (`src/lib/lib.c`, `src/lib/lib.h`)
 
 ### 2.1 Header versions

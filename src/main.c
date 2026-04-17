@@ -17,6 +17,7 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 	const unsigned int MdFinal = 0x0020;
 	const unsigned int MdVirtual = 0x0040;
 	const unsigned int MdAbstract = 0x0400;
+	const unsigned int MdPinvokeImpl = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL;
 	const char *vis = "";
 	switch (flags & MemberAccessMask) {
 	case MdPublic: vis = "public"; break;
@@ -47,6 +48,10 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
 		strncat (tmp, "final", sizeof (tmp) - 1);
 	}
+	if (flags & MdPinvokeImpl) {
+		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
+		strncat (tmp, "extern", sizeof (tmp) - 1);
+	}
 	if (!*tmp) {
 		strncpy (o, "", osz);
 	} else {
@@ -56,7 +61,7 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 }
 
 static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-S] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
+	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-S] [-P] [-F text|json|r2] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
 }
 
 static const char *unity_range_from_wire (int wire) {
@@ -241,6 +246,110 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 	return 0;
 }
 
+/* Cross-entry sort for stable output: sort by image_name, then name. */
+static int interop_cmp (const void *a, const void *b) {
+	const R2UnityInterop *x = (const R2UnityInterop *) a;
+	const R2UnityInterop *y = (const R2UnityInterop *) b;
+	const char *xi = x->image_name ? x->image_name : "";
+	const char *yi = y->image_name ? y->image_name : "";
+	int c = strcmp (xi, yi);
+	if (c) {
+		return c;
+	}
+	const char *xn = x->name ? x->name : "";
+	const char *yn = y->name ? y->name : "";
+	return strcmp (xn, yn);
+}
+
+static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
+		const char *format, bool quiet) {
+	(void) exe_path;
+	size_t n = 0;
+	R2UnityInterop *items = r2unity_enumerate_pinvokes (meta, &n);
+	if (items && n > 1) {
+		qsort (items, n, sizeof (R2UnityInterop), interop_cmp);
+	}
+
+	const bool is_json = format && !strcmp (format, "json");
+	const bool is_r2 = format && !strcmp (format, "r2");
+
+	if (is_json) {
+		FILE *f = stdout;
+		fprintf (f, "{\"ok\":true,\"version\":%d,\"pinvokes\":[", meta->version);
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			if (i) fputc (',', f);
+			fprintf (f, "{\"image\":\"");
+			json_escape (f, it->image_name ? it->image_name : "");
+			fprintf (f, "\",\"method\":\"");
+			json_escape (f, it->name ? it->name : "");
+			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"confidence\":%u",
+				it->token, it->flags, it->iflags, (unsigned) it->confidence);
+			if (it->dll_name) {
+				fprintf (f, ",\"dll\":\"");
+				json_escape (f, it->dll_name);
+				fprintf (f, "\"");
+			} else {
+				fprintf (f, ",\"dll\":null");
+			}
+			if (it->entry_name) {
+				fprintf (f, ",\"entry\":\"");
+				json_escape (f, it->entry_name);
+				fprintf (f, "\"");
+			} else {
+				fprintf (f, ",\"entry\":null");
+			}
+			fputc ('}', f);
+		}
+		fprintf (f, "],\"reverse_pinvokes\":[],\"anonymous_reverse_pinvokes\":[],\"interop_data\":null}\n");
+	} else if (is_r2) {
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			if (!it->name) {
+				continue;
+			}
+			char buf[1024];
+			if (it->image_name && *it->image_name) {
+				snprintf (buf, sizeof (buf), "sym.unity.%s.%s", it->image_name, it->name);
+			} else {
+				snprintf (buf, sizeof (buf), "sym.unity.%s", it->name);
+			}
+			r_name_filter (buf, -1);
+			if (it->dll_name) {
+				printf ("# PInvoke %s -> %s!%s\n", buf,
+					it->dll_name,
+					it->entry_name ? it->entry_name : it->name);
+			} else {
+				printf ("# PInvoke %s -> <unresolved>\n", buf);
+			}
+		}
+	} else {
+		if (!quiet) {
+			printf ("# P/Invoke methods (managed -> native), metadata wire version %d\n", meta->version);
+			printf ("# IMAGE\tMETHOD\tDLL\tENTRY\tFLAGS\tCONFIDENCE\n");
+		}
+		for (size_t i = 0; i < n; i++) {
+			R2UnityInterop *it = &items[i];
+			char attrs[128];
+			attrs[0] = 0;
+			build_method_attrs_string (attrs, sizeof (attrs), it->flags);
+			printf ("%s\t%s\t%s\t%s\t%s\t%u\n",
+				it->image_name ? it->image_name : "",
+				it->name ? it->name : "",
+				it->dll_name ? it->dll_name : "<unresolved>",
+				it->entry_name ? it->entry_name : "<default>",
+				*attrs ? attrs : "-",
+				(unsigned) it->confidence);
+		}
+		if (!quiet) {
+			printf ("# summary: pinvokes=%zu reverse_pinvokes=0 (wrapper resolution not yet implemented)\n", n);
+		}
+	}
+
+	r2unity_free_interop (items, n);
+	return 0;
+}
+
 int main (int argc, char *argv[]) {
 	bool json_one_line = false;
 	bool quiet = false;
@@ -250,14 +359,18 @@ int main (int argc, char *argv[]) {
 	size_t gmp_count = 0;
 	bool fast = false;
 	bool sbom = false;
+	bool pinvokes = false;
+	const char *format = "text";
 	int opt;
-	while ((opt = getopt (argc, argv, "jqfvSl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "jqfvSPl:a:c:F:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'q': quiet = true; break;
 		case 'f': fast = true; break;
 		case 'v': debug = true; break;
 		case 'S': sbom = true; break;
+		case 'P': pinvokes = true; break;
+		case 'F': format = optarg; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
 		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
@@ -291,6 +404,19 @@ int main (int argc, char *argv[]) {
 
 	if (sbom) {
 		int rc = emit_sbom (meta, exe_path, metadata_path);
+		r2unity_free_metadata (meta);
+		r_unref (buf);
+		return rc;
+	}
+
+	if (pinvokes) {
+		if (strcmp (format, "text") && strcmp (format, "json") && strcmp (format, "r2")) {
+			fprintf (stderr, "r2unity: unknown -F format %s (expected text|json|r2)\n", format);
+			r2unity_free_metadata (meta);
+			r_unref (buf);
+			return 1;
+		}
+		int rc = emit_pinvokes (meta, exe_path, format, quiet);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		return rc;
