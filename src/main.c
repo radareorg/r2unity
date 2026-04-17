@@ -61,13 +61,6 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 }
 
 static void print_usage (FILE *out, const char *prog_name) {
-#if defined (__APPLE__)
-	const char *host_os = "macOS";
-#elif defined (_WIN32)
-	const char *host_os = "Windows";
-#else
-	const char *host_os = "Linux";
-#endif
 	fprintf (out,
 		"Usage: %s [options] <executable> <global-metadata.dat>\n"
 		"\n"
@@ -89,20 +82,18 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  <executable>           Native IL2CPP binary for the target platform\n"
 		"  <global-metadata.dat>  Unity IL2CPP metadata file\n"
 		"\n"
-		"Expected files on this host (%s):\n"
-#if defined (__APPLE__)
+		"Expected files per target platform:\n"
 		"  iOS build:          UnityFramework      + global-metadata.dat\n"
 		"                      metadata: ../../Data/Managed/Metadata/global-metadata.dat\n"
 		"  macOS standalone:   GameAssembly.dylib  + global-metadata.dat\n"
 		"                      metadata: ../Resources/Data/il2cpp_data/Metadata/global-metadata.dat\n"
-#elif defined (_WIN32)
 		"  Windows standalone: GameAssembly.dll    + global-metadata.dat\n"
 		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n"
-#else
 		"  Android build:      libil2cpp.so        + global-metadata.dat\n"
 		"                      metadata: ../../assets/bin/Data/Managed/Metadata/global-metadata.dat\n"
-#endif
-		, prog_name, host_os);
+		"  Linux standalone:   GameAssembly.so     + global-metadata.dat\n"
+		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n"
+		, prog_name);
 }
 
 static const char *unity_range_from_wire (int wire) {
