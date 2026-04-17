@@ -78,6 +78,7 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
 		"  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)\n"
 		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
+		"  -D            Detect companion files from the given executable path and exit\n"
 		"  -v            Verbose debug tracing on stderr\n"
 		"  -h            Show this help and exit\n"
 		"\n"
@@ -537,8 +538,9 @@ int main (int argc, char *argv[]) {
 	bool pinvokes = false;
 	bool reverse_pinvokes = false;
 	bool string_literals = false;
+	bool detect_paths = false;
 	int opt;
-	while ((opt = getopt (argc, argv, "hjrqfvSPRzl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjrqfvSPRDzl:a:c:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'r': r2_script = true; break;
@@ -548,6 +550,7 @@ int main (int argc, char *argv[]) {
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
 		case 'R': reverse_pinvokes = true; break;
+		case 'D': detect_paths = true; break;
 		case 'z': string_literals = true; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
@@ -563,6 +566,58 @@ int main (int argc, char *argv[]) {
 	if (pinvokes && reverse_pinvokes) {
 		R_LOG_ERROR ("-P and -R are mutually exclusive");
 		return 1;
+	}
+	if (detect_paths) {
+		if (argc - optind != 1) {
+			print_usage (stderr, argv[0]);
+			return 1;
+		}
+		const char *input = argv[optind];
+		R2UnityPaths *p = r2unity_detect_paths (input);
+		if (!p) {
+			if (json_one_line) {
+				printf ("{\"ok\":false,\"input\":\"");
+				json_escape (stdout, input);
+				printf ("\"}\n");
+			} else {
+				R_LOG_ERROR ("could not detect Unity IL2CPP layout from %s", input);
+			}
+			return p ? 0 : 1;
+		}
+		if (json_one_line) {
+			FILE *f = stdout;
+			fprintf (f, "{\"ok\":true,\"platform\":\"");
+			json_escape (f, p->platform ? p->platform : "");
+			fprintf (f, "\",\"main_executable\":\"");
+			json_escape (f, p->main_executable ? p->main_executable : "");
+			fprintf (f, "\",\"il2cpp_binary\":");
+			if (p->il2cpp_binary) {
+				fputc ('"', f);
+				json_escape (f, p->il2cpp_binary);
+				fputc ('"', f);
+			} else {
+				fprintf (f, "null");
+			}
+			fprintf (f, ",\"metadata\":\"");
+			json_escape (f, p->metadata ? p->metadata : "");
+			fprintf (f, "\",\"data_dir\":");
+			if (p->data_dir) {
+				fputc ('"', f);
+				json_escape (f, p->data_dir);
+				fputc ('"', f);
+			} else {
+				fprintf (f, "null");
+			}
+			fprintf (f, "}\n");
+		} else {
+			printf ("platform:        %s\n", p->platform ? p->platform : "-");
+			printf ("main_executable: %s\n", p->main_executable ? p->main_executable : "-");
+			printf ("il2cpp_binary:   %s\n", p->il2cpp_binary ? p->il2cpp_binary : "-");
+			printf ("metadata:        %s\n", p->metadata ? p->metadata : "-");
+			printf ("data_dir:        %s\n", p->data_dir ? p->data_dir : "-");
+		}
+		r2unity_free_paths (p);
+		return 0;
 	}
 	if (string_literals) {
 		if (json_one_line || fast || gmp_addr || sbom || pinvokes || reverse_pinvokes) {

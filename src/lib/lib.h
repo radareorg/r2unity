@@ -373,4 +373,23 @@ R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *p
 R_API void r2unity_set_debug (bool v);
 R_API bool r2unity_is_debug (void);
 
+/* Companion-file discovery.
+ *
+ * Given any file inside a Unity IL2CPP deployment (the main app binary, the
+ * IL2CPP native library, or a sibling dropped into a flat fixture directory),
+ * r2unity_detect_paths probes the well-known layouts for iOS, macOS, Windows,
+ * Linux, Android (extracted APK) and the r2unity companion-file layout. Returns
+ * NULL if no layout matches or `global-metadata.dat` cannot be located. */
+typedef struct {
+	char *platform;        /* "ios", "macos", "windows", "linux", "android", "fixture" */
+	char *main_executable; /* absolute path of the input file */
+	char *il2cpp_binary;   /* UnityFramework / GameAssembly.* / libil2cpp.so — may be NULL */
+	char *metadata;        /* global-metadata.dat (always set when the function succeeds) */
+	char *data_dir;        /* root Data folder — may be NULL */
+} R2UnityPaths;
+
+R_API R2UnityPaths *r2unity_detect_paths (const char *main_exe_path);
+R_API void r2unity_free_paths (R2UnityPaths *p);
+R_API const char *r2unity_platform_il2cpp_name (const char *platform);
+
 #endif
