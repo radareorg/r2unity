@@ -1,18 +1,5 @@
 #include "lib.h"
 #include <r_util.h>
-#include <r_util/r_buf.h>
-#undef RD_LE32
-static inline ut32 RD_LE32 (const ut8 *p) {
-	return ((ut32)p[0]) | ((ut32)p[1] << 8) | ((ut32)p[2] << 16) | ((ut32)p[3] << 24);
-}
-static inline ut16 RD_LE16 (const ut8 *p) {
-	return (ut16)((ut16)p[0] | ((ut16)p[1] << 8));
-}
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <fcntl.h>
-#include <unistd.h>
 
 static bool g_debug = false;
 
@@ -39,12 +26,12 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 		R_FREE (meta);
 		return NULL;
 	}
-	uint32_t sanity = RD_LE32 (preamble);
+	uint32_t sanity = r_read_le32 (preamble);
 	if (sanity != IL2CPP_MAGIC) {
 		R_FREE (meta);
 		return NULL;
 	}
-	int32_t version = (int32_t) RD_LE32 (preamble + 4);
+	int32_t version = (int32_t) r_read_le32 (preamble + 4);
 	meta->version = version;
 	size_t header_size = 0;
 	if (version < 24 || version > 31) {
@@ -66,11 +53,11 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 	}
 	// Normalize header from on-disk little-endian to native byte order.
 	// Every field in the Il2Cpp header structs is a 32-bit word, so a single
-	// in-place RD_LE32 sweep handles all versions and is a no-op on LE hosts.
+	// in-place r_read_le32 sweep handles all versions and is a no-op on LE hosts.
 	uint32_t *hdr_words = (uint32_t *) &meta->header;
 	size_t nfields = header_size / sizeof (uint32_t);
 	for (size_t i = 0; i < nfields; i++) {
-		hdr_words[i] = RD_LE32 ((const ut8 *) &hdr_words[i]);
+		hdr_words[i] = r_read_le32 (&hdr_words[i]);
 	}
 	meta->buf = buf;
 	/* Normalize header fields depending on version to simplify later access */
@@ -181,32 +168,32 @@ R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta,
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf + i * entry;
-		types[i].nameIndex = RD_LE32 (p + 0);
-		types[i].namespaceIndex = RD_LE32 (p + 4);
-		types[i].byvalTypeIndex = (int32_t) RD_LE32 (p + 8);
-		types[i].declaringTypeIndex = (int32_t) RD_LE32 (p + 12);
-		types[i].parentIndex = (int32_t) RD_LE32 (p + 16);
-		types[i].elementTypeIndex = (int32_t) RD_LE32 (p + 20);
-		types[i].genericContainerIndex = (int32_t) RD_LE32 (p + 24);
-		types[i].flags = RD_LE32 (p + 28);
-		types[i].fieldStart = (int32_t) RD_LE32 (p + 32);
-		types[i].methodStart = (int32_t) RD_LE32 (p + 36);
-		types[i].eventStart = (int32_t) RD_LE32 (p + 40);
-		types[i].propertyStart = (int32_t) RD_LE32 (p + 44);
-		types[i].nestedTypesStart = (int32_t) RD_LE32 (p + 48);
-		types[i].interfacesStart = (int32_t) RD_LE32 (p + 52);
-		types[i].vtableStart = (int32_t) RD_LE32 (p + 56);
-		types[i].interfaceOffsetsStart = (int32_t) RD_LE32 (p + 60);
-		types[i].method_count = RD_LE16 (p + 64);
-		types[i].property_count = RD_LE16 (p + 66);
-		types[i].field_count = RD_LE16 (p + 68);
-		types[i].event_count = RD_LE16 (p + 70);
-		types[i].nested_type_count = RD_LE16 (p + 72);
-		types[i].vtable_count = RD_LE16 (p + 74);
-		types[i].interfaces_count = RD_LE16 (p + 76);
-		types[i].interface_offsets_count = RD_LE16 (p + 78);
-		types[i].bitfield = RD_LE32 (p + 80);
-		types[i].token = RD_LE32 (p + 84);
+		types[i].nameIndex = r_read_le32 (p + 0);
+		types[i].namespaceIndex = r_read_le32 (p + 4);
+		types[i].byvalTypeIndex = (int32_t) r_read_le32 (p + 8);
+		types[i].declaringTypeIndex = (int32_t) r_read_le32 (p + 12);
+		types[i].parentIndex = (int32_t) r_read_le32 (p + 16);
+		types[i].elementTypeIndex = (int32_t) r_read_le32 (p + 20);
+		types[i].genericContainerIndex = (int32_t) r_read_le32 (p + 24);
+		types[i].flags = r_read_le32 (p + 28);
+		types[i].fieldStart = (int32_t) r_read_le32 (p + 32);
+		types[i].methodStart = (int32_t) r_read_le32 (p + 36);
+		types[i].eventStart = (int32_t) r_read_le32 (p + 40);
+		types[i].propertyStart = (int32_t) r_read_le32 (p + 44);
+		types[i].nestedTypesStart = (int32_t) r_read_le32 (p + 48);
+		types[i].interfacesStart = (int32_t) r_read_le32 (p + 52);
+		types[i].vtableStart = (int32_t) r_read_le32 (p + 56);
+		types[i].interfaceOffsetsStart = (int32_t) r_read_le32 (p + 60);
+		types[i].method_count = r_read_le16 (p + 64);
+		types[i].property_count = r_read_le16 (p + 66);
+		types[i].field_count = r_read_le16 (p + 68);
+		types[i].event_count = r_read_le16 (p + 70);
+		types[i].nested_type_count = r_read_le16 (p + 72);
+		types[i].vtable_count = r_read_le16 (p + 74);
+		types[i].interfaces_count = r_read_le16 (p + 76);
+		types[i].interface_offsets_count = r_read_le16 (p + 78);
+		types[i].bitfield = r_read_le32 (p + 80);
+		types[i].token = r_read_le32 (p + 84);
 	}
 	R_FREE (buf);
 	return types;
@@ -239,16 +226,16 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf + i * entry;
-		methods[i].nameIndex = RD_LE32 (p + 0);
-		methods[i].declaringType = (int32_t) RD_LE32 (p + 4);
-		methods[i].returnType = (int32_t) RD_LE32 (p + 8);
-		methods[i].parameterStart = (int32_t) RD_LE32 (p + 12);
-		methods[i].genericContainerIndex = (int32_t) RD_LE32 (p + 16);
-		methods[i].token = RD_LE32 (p + 20);
-		methods[i].flags = RD_LE16 (p + 24);
-		methods[i].iflags = RD_LE16 (p + 26);
-		methods[i].slot = RD_LE16 (p + 28);
-		methods[i].parameterCount = RD_LE16 (p + 30);
+		methods[i].nameIndex = r_read_le32 (p + 0);
+		methods[i].declaringType = (int32_t) r_read_le32 (p + 4);
+		methods[i].returnType = (int32_t) r_read_le32 (p + 8);
+		methods[i].parameterStart = (int32_t) r_read_le32 (p + 12);
+		methods[i].genericContainerIndex = (int32_t) r_read_le32 (p + 16);
+		methods[i].token = r_read_le32 (p + 20);
+		methods[i].flags = r_read_le16 (p + 24);
+		methods[i].iflags = r_read_le16 (p + 26);
+		methods[i].slot = r_read_le16 (p + 28);
+		methods[i].parameterCount = r_read_le16 (p + 30);
 	}
 	R_FREE (buf);
 	return methods;
@@ -295,16 +282,16 @@ R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf2 + i * entry;
-		imgs[i].nameIndex = RD_LE32 (p + 0);
-		imgs[i].assemblyIndex = (int32_t) RD_LE32 (p + 4);
-		imgs[i].typeStart = (int32_t) RD_LE32 (p + 8);
-		imgs[i].typeCount = RD_LE32 (p + 12);
-		imgs[i].exportedTypeStart = (int32_t) RD_LE32 (p + 16);
-		imgs[i].exportedTypeCount = RD_LE32 (p + 20);
-		imgs[i].entryPointIndex = (int32_t) RD_LE32 (p + 24);
-		imgs[i].token = RD_LE32 (p + 28);
-		imgs[i].customAttributeStart = (int32_t) RD_LE32 (p + 32);
-		imgs[i].customAttributeCount = RD_LE32 (p + 36);
+		imgs[i].nameIndex = r_read_le32 (p + 0);
+		imgs[i].assemblyIndex = (int32_t) r_read_le32 (p + 4);
+		imgs[i].typeStart = (int32_t) r_read_le32 (p + 8);
+		imgs[i].typeCount = r_read_le32 (p + 12);
+		imgs[i].exportedTypeStart = (int32_t) r_read_le32 (p + 16);
+		imgs[i].exportedTypeCount = r_read_le32 (p + 20);
+		imgs[i].entryPointIndex = (int32_t) r_read_le32 (p + 24);
+		imgs[i].token = r_read_le32 (p + 28);
+		imgs[i].customAttributeStart = (int32_t) r_read_le32 (p + 32);
+		imgs[i].customAttributeCount = r_read_le32 (p + 36);
 	}
 	R_FREE (buf2);
 	return imgs;

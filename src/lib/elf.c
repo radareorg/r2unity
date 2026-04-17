@@ -1,20 +1,6 @@
 // Fast ELF parser for r2unity
 #include "lib.h"
 #include <string.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-
-static inline ut32 RD_LE32 (const ut8 *p) {
-	return ((ut32)p[0]) | ((ut32)p[1] << 8) | ((ut32)p[2] << 16) | ((ut32)p[3] << 24);
-}
-static inline ut64 RD_LE64 (const ut8 *p) {
-	return ((ut64)p[0]) | ((ut64)p[1] << 8) | ((ut64)p[2] << 16) | ((ut64)p[3] << 24) |
-		((ut64)p[4] << 32) | ((ut64)p[5] << 40) | ((ut64)p[6] << 48) | ((ut64)p[7] << 56);
-}
-static inline ut16 RD_LE16 (const ut8 *p) {
-	return (ut16)((ut16)p[0] | ((ut16)p[1] << 8));
-}
 
 typedef struct {
 	ut64 vaddr;
@@ -36,54 +22,48 @@ typedef struct {
 
 static bool elf_load (const char *path, ElfImg *e) {
 	memset (e, 0, sizeof (*e));
-	int fd = open (path, O_RDONLY);
-	if (fd < 0) return false;
-	struct stat st;
-	if (fstat (fd, &st) != 0 || st.st_size <= 0) { close (fd); return false; }
-	e->filesize = (ut64) st.st_size;
-	e->file = R_NEWS (ut8, e->filesize);
-	if (!e->file) { close (fd); return false; }
-	ssize_t rd = read (fd, e->file, (size_t) e->filesize);
-	close (fd);
-	if (rd < 0 || (ut64) rd != e->filesize) { R_FREE (e->file); return false; }
+	size_t sz = 0;
+	e->file = (ut8 *) r_file_slurp (path, &sz);
+	if (!e->file || sz == 0) { R_FREE (e->file); return false; }
+	e->filesize = (ut64) sz;
 	const ut8 *p = e->file;
 	if (!(p[0] == 0x7f && p[1] == 'E' && p[2] == 'L' && p[3] == 'F')) { R_FREE (e->file); return false; }
 	e->is64 = (p[4] == 2);
 	e->le = (p[5] == 1);
 	if (!e->le) { R_FREE (e->file); return false; }
 	if (e->is64) {
-		ut64 phoff = RD_LE64 (p + 0x20);
-		ut16 phentsize = RD_LE16 (p + 0x36);
-		ut16 phnum = RD_LE16 (p + 0x38);
+		ut64 phoff = r_read_le64 (p + 0x20);
+		ut16 phentsize = r_read_le16 (p + 0x36);
+		ut16 phnum = r_read_le16 (p + 0x38);
 		for (ut16 i = 0; i < phnum && e->nsegs < (int)(sizeof (e->segs)/sizeof (e->segs[0])); i++) {
 			ut64 off = phoff + (ut64) i * phentsize;
 			if (off + 56 > e->filesize) break;
 			const ut8 *ph = p + off;
-			ut32 p_type = RD_LE32 (ph + 0);
-			ut32 p_flags = RD_LE32 (ph + 4);
-			ut64 p_offset = RD_LE64 (ph + 8);
-			ut64 p_vaddr = RD_LE64 (ph + 16);
-			ut64 p_filesz = RD_LE64 (ph + 32);
-			ut64 p_memsz = RD_LE64 (ph + 40);
+			ut32 p_type = r_read_le32 (ph + 0);
+			ut32 p_flags = r_read_le32 (ph + 4);
+			ut64 p_offset = r_read_le64 (ph + 8);
+			ut64 p_vaddr = r_read_le64 (ph + 16);
+			ut64 p_filesz = r_read_le64 (ph + 32);
+			ut64 p_memsz = r_read_le64 (ph + 40);
 			if (p_type == 1 || p_type == 2) {
 				ElfSeg *s = &e->segs[e->nsegs++];
 				s->vaddr = p_vaddr; s->memsz = p_memsz; s->offset = p_offset; s->filesz = p_filesz; s->flags = p_flags; s->p_type = p_type;
 			}
 		}
 	} else {
-		ut32 phoff = RD_LE32 (p + 0x1C);
-		ut16 phentsize = RD_LE16 (p + 0x2A);
-		ut16 phnum = RD_LE16 (p + 0x2C);
+		ut32 phoff = r_read_le32 (p + 0x1C);
+		ut16 phentsize = r_read_le16 (p + 0x2A);
+		ut16 phnum = r_read_le16 (p + 0x2C);
 		for (ut16 i = 0; i < phnum && e->nsegs < (int)(sizeof (e->segs)/sizeof (e->segs[0])); i++) {
 			ut64 off = (ut64) phoff + (ut64) i * phentsize;
 			if (off + 32 > e->filesize) break;
 			const ut8 *ph = p + off;
-			ut32 p_type = RD_LE32 (ph + 0);
-			ut32 p_offset = RD_LE32 (ph + 4);
-			ut32 p_vaddr = RD_LE32 (ph + 8);
-			ut32 p_filesz = RD_LE32 (ph + 16);
-			ut32 p_memsz = RD_LE32 (ph + 20);
-			ut32 p_flags = RD_LE32 (ph + 24);
+			ut32 p_type = r_read_le32 (ph + 0);
+			ut32 p_offset = r_read_le32 (ph + 4);
+			ut32 p_vaddr = r_read_le32 (ph + 8);
+			ut32 p_filesz = r_read_le32 (ph + 16);
+			ut32 p_memsz = r_read_le32 (ph + 20);
+			ut32 p_flags = r_read_le32 (ph + 24);
 			if (p_type == 1 || p_type == 2) {
 				ElfSeg *s = &e->segs[e->nsegs++];
 				s->vaddr = p_vaddr; s->memsz = p_memsz; s->offset = p_offset; s->filesz = p_filesz; s->flags = p_flags; s->p_type = p_type;
@@ -139,8 +119,8 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	if (dyn_off && dyn_sz) {
 		const ut8 *d = e.file + dyn_off;
 		for (ut64 off = 0; off + (e.is64? 16: 8) <= dyn_sz; off += (e.is64? 16: 8)) {
-			ut64 tag = e.is64 ? RD_LE64 (d + off) : (ut64) RD_LE32 (d + off);
-			ut64 val = e.is64 ? RD_LE64 (d + off + 8) : (ut64) RD_LE32 (d + off + 4);
+			ut64 tag = e.is64 ? r_read_le64 (d + off) : (ut64) r_read_le32 (d + off);
+			ut64 val = e.is64 ? r_read_le64 (d + off + 8) : (ut64) r_read_le32 (d + off + 4);
 			if (tag == 0) break;
 			if (tag == 7) rela_off = val; else if (tag == 8) rela_sz = val; else if (tag == 9) rela_ent = val;
 			else if (tag == 17) rel_off = val; else if (tag == 18) rel_sz = val; else if (tag == 19) rel_ent = val;
@@ -150,9 +130,9 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	if (rela_off && rela_sz && rela_ent) {
 		for (ut64 i = 0; i + rela_ent <= rela_sz; i += rela_ent) {
 			const ut8 *rp = elf_vm_to_ptr (&e, rela_off + i); if (!rp) break;
-			ut64 r_offset = e.is64 ? RD_LE64 (rp + 0) : (ut64) RD_LE32 (rp + 0);
-			ut64 r_info = e.is64 ? RD_LE64 (rp + 8) : (ut64) RD_LE32 (rp + 4);
-			ut64 r_addend = e.is64 ? RD_LE64 (rp + 16) : (ut64) RD_LE32 (rp + 8);
+			ut64 r_offset = e.is64 ? r_read_le64 (rp + 0) : (ut64) r_read_le32 (rp + 0);
+			ut64 r_info = e.is64 ? r_read_le64 (rp + 8) : (ut64) r_read_le32 (rp + 4);
+			ut64 r_addend = e.is64 ? r_read_le64 (rp + 16) : (ut64) r_read_le32 (rp + 8);
 			ut64 type = e.is64 ? (r_info & 0xffffffffULL) : (r_info & 0xffULL);
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) continue;
@@ -166,13 +146,13 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	if (rel_off && rel_sz && rel_ent) {
 		for (ut64 i = 0; i + rel_ent <= rel_sz; i += rel_ent) {
 			const ut8 *rp = elf_vm_to_ptr (&e, rel_off + i); if (!rp) break;
-			ut64 r_offset = e.is64 ? RD_LE64 (rp + 0) : (ut64) RD_LE32 (rp + 0);
-			ut64 r_info = e.is64 ? RD_LE64 (rp + 8) : (ut64) RD_LE32 (rp + 4);
+			ut64 r_offset = e.is64 ? r_read_le64 (rp + 0) : (ut64) r_read_le32 (rp + 0);
+			ut64 r_info = e.is64 ? r_read_le64 (rp + 8) : (ut64) r_read_le32 (rp + 4);
 			ut64 type = e.is64 ? (r_info & 0xffffffffULL) : (r_info & 0xffULL);
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) continue;
 			ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, r_offset); if (!loc) continue;
-			ut64 add = e.is64 ? RD_LE64 (loc) : (ut64) RD_LE32 (loc);
+			ut64 add = e.is64 ? r_read_le64 (loc) : (ut64) r_read_le32 (loc);
 			// REL: add base to current value
 			ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add;
 			if (e.is64) { for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
@@ -183,17 +163,17 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 		ut64 curr = 0;
 		for (ut64 i = 0; i + relr_ent <= relr_sz; i += relr_ent) {
 			const ut8 *rp = elf_vm_to_ptr (&e, relr_off + i); if (!rp) break;
-			ut64 R = RD_LE64 (rp);
+			ut64 R = r_read_le64 (rp);
 			if ((R & 1ULL) == 0) {
 				ut64 addr = R; ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr);
-				if (loc) { ut64 add = RD_LE64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
+				if (loc) { ut64 add = r_read_le64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff); }
 				curr = addr + 8;
 			} else {
 				ut64 bitmap = R >> 1;
 				for (int bit = 0; bit < 63; bit++) if (bitmap & (1ULL << bit)) {
 					ut64 addr = curr + (ut64)(bit + 1) * 8ULL;
 					ut8 *loc = (ut8 *) elf_vm_to_ptr (&e, addr); if (!loc) continue;
-					ut64 add = RD_LE64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
+					ut64 add = r_read_le64 (loc); ut64 newv = base_vaddr != UT64_MAX ? (base_vaddr + add) : add; for (int b = 0; b < 8; b++) loc[b] = (ut8)((newv >> (8*b)) & 0xff);
 				}
 				curr += 8ULL * 63ULL;
 			}
@@ -212,9 +192,9 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
         const ut8 *buf = e.file + s->offset;
         ut64 sz = s->filesz;
         for (ut64 off = 0; off + (ut64)(8 + ptrsz) * 3 <= sz; off += 4) {
-            ut32 cnt1 = RD_LE32 (buf + off + 0);
-            ut64 p1 = (ptrsz == 8)? RD_LE64 (buf + off + 8): (ut64) RD_LE32 (buf + off + 4);
-            ut32 cnt2 = RD_LE32 (buf + off + (ut64)(8 + ptrsz));
+            ut32 cnt1 = r_read_le32 (buf + off + 0);
+            ut64 p1 = (ptrsz == 8)? r_read_le64 (buf + off + 8): (ut64) r_read_le32 (buf + off + 4);
+            ut32 cnt2 = r_read_le32 (buf + off + (ut64)(8 + ptrsz));
             if (cnt1 < 32 || cnt2 < 16) continue;
             // Sample method array
             ut32 good = 0, seen = 0;
@@ -223,7 +203,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
                 const ut8 *pp = elf_vm_to_ptr (&e, p1 + (ut64)k * (ut64)ptrsz);
                 if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + p1 + (ut64)k * (ut64)ptrsz); }
                 if (!pp) break;
-                ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
+                ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
                 if (val) seen++;
                 if ((val >= text_lo && val < text_hi) || (val && base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
             }
@@ -236,7 +216,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
                     const ut8 *pp = elf_vm_to_ptr (&e, p1 + (ut64)m * (ut64)ptrsz);
                     if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + p1 + (ut64)m * (ut64)ptrsz); }
                     if (!pp) break;
-                    ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
+                    ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
                     ut64 abs = (val >= text_lo && val < text_hi)? val: ((val && base_vaddr != UT64_MAX)? val + base_vaddr: val);
                     if (abs >= text_lo && abs < text_hi) { candidates[m] = abs; in_text++; }
                 }
@@ -252,19 +232,19 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 		const ut8 *buf = e.file + s->offset;
 		ut64 sz = s->filesz;
             for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
-                ut32 cnt32 = RD_LE32 (buf + off);
+                ut32 cnt32 = r_read_le32 (buf + off);
                 if (cnt32 == 0) continue;
                 /* stricter thresholds to avoid wrong tables */
                 if (cnt32 < 64) continue;
                 if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) continue;
-                ut64 arrptr = (ptrsz == 8) ? RD_LE64 (buf + off + 8) : (ut64) RD_LE32 (buf + off + 4);
+                ut64 arrptr = (ptrsz == 8) ? r_read_le64 (buf + off + 8) : (ut64) r_read_le32 (buf + off + 4);
                 ut32 good = 0, seen = 0;
                 ut32 sample = R_MIN ((ut32)128, cnt32);
                 for (ut32 k = 0; k < sample; k++) {
                     const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)k * (ut64)ptrsz);
                     if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)k * (ut64)ptrsz); }
                     if (!pp) break;
-                    ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
+                    ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
                     if (val) seen++;
                     if ((val >= text_lo && val < text_hi) || (val && base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
                 }
@@ -277,7 +257,7 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 					const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)m * (ut64)ptrsz);
 					if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)m * (ut64)ptrsz); }
 					if (!pp) break;
-					ut64 val = (ptrsz == 8) ? RD_LE64 (pp) : (ut64) RD_LE32 (pp);
+					ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
 					ut64 abs = (val >= text_lo && val < text_hi)? val: ((val && base_vaddr != UT64_MAX)? val + base_vaddr: val);
 					if (abs >= text_lo && abs < text_hi) { candidates[m] = abs; in_text++; }
 				}

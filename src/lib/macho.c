@@ -1,20 +1,6 @@
 // Fast Mach-O parser for r2unity
 #include "lib.h"
 #include <string.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-
-static inline ut32 RD_LE32 (const ut8 *p) {
-	return ((ut32)p[0]) | ((ut32)p[1] << 8) | ((ut32)p[2] << 16) | ((ut32)p[3] << 24);
-}
-static inline ut32 RD_BE32 (const ut8 *p) {
-	return ((ut32)p[3]) | ((ut32)p[2] << 8) | ((ut32)p[1] << 16) | ((ut32)p[0] << 24);
-}
-static inline ut64 RD_LE64 (const ut8 *p) {
-	return ((ut64)p[0]) | ((ut64)p[1] << 8) | ((ut64)p[2] << 16) | ((ut64)p[3] << 24) |
-		((ut64)p[4] << 32) | ((ut64)p[5] << 40) | ((ut64)p[6] << 48) | ((ut64)p[7] << 56);
-}
 
 typedef struct {
 	char segname[16];
@@ -38,62 +24,50 @@ typedef struct {
 
 static bool macho_load (const char *path, MachO *mo) {
 	memset (mo, 0, sizeof (*mo));
-	int fd = open (path, O_RDONLY);
-	if (fd < 0) return false;
-	struct stat st;
-	if (fstat (fd, &st) != 0 || st.st_size <= 0) {
-		close (fd);
-		return false;
-	}
-	mo->filesize = (ut64) st.st_size;
-	mo->file = R_NEWS (ut8, mo->filesize);
-	if (!mo->file) {
-		close (fd);
-		return false;
-	}
-	ssize_t rd = read (fd, mo->file, (size_t) mo->filesize);
-	close (fd);
-	if (rd < 0 || (ut64) rd != mo->filesize) {
+	size_t sz = 0;
+	mo->file = (ut8 *) r_file_slurp (path, &sz);
+	if (!mo->file || sz == 0) {
 		R_FREE (mo->file);
 		return false;
 	}
-	ut32 magic = RD_BE32 (mo->file);
+	mo->filesize = (ut64) sz;
+	ut32 magic = r_read_be32 (mo->file);
 	ut64 off = 0;
 	if (magic == 0xcafebabe) {
-		ut32 nfat = RD_BE32 (mo->file + 4);
+		ut32 nfat = r_read_be32 (mo->file + 4);
 		ut32 best = 0;
 		for (ut32 i = 0; i < nfat; i++) {
 			const ut8 *fa = mo->file + 8 + i * 20;
-			ut32 cputype = RD_BE32 (fa + 0);
+			ut32 cputype = r_read_be32 (fa + 0);
 			if (cputype == 0x0100000c) { best = i; break; }
 		}
 		const ut8 *fa = mo->file + 8 + best * 20;
-		off = RD_BE32 (fa + 8);
+		off = r_read_be32 (fa + 8);
 	}
 	mo->base = off;
 	const ut8 *p = mo->file + off;
-	ut32 mh_magic = RD_LE32 (p);
+	ut32 mh_magic = r_read_le32 (p);
 	if (mh_magic != 0xFEEDFACF) {
 		R_FREE (mo->file);
 		return false;
 	}
-	ut32 ncmds = RD_LE32 (p + 0x10);
+	ut32 ncmds = r_read_le32 (p + 0x10);
 	mo->ncmds = ncmds;
 	mo->cmd_off = off + 0x20;
 	ut64 co = mo->cmd_off;
 	for (ut32 i = 0; i < ncmds && (co + 8 <= mo->filesize); i++) {
-		ut32 cmd = RD_LE32 (mo->file + co);
-		ut32 cmdsize = RD_LE32 (mo->file + co + 4);
+		ut32 cmd = r_read_le32 (mo->file + co);
+		ut32 cmdsize = r_read_le32 (mo->file + co + 4);
 		if (cmd == 0x19 && cmdsize >= 72) {
 			if (mo->nsegs < (int)(sizeof (mo->segs)/sizeof (mo->segs[0]))) {
 				MachSeg *s = &mo->segs[mo->nsegs++];
 				const ut8 *sp = mo->file + co + 8;
 				memcpy (s->segname, sp, 16);
-				s->vmaddr = RD_LE64 (sp + 16);
-				s->vmsize = RD_LE64 (sp + 24);
-				s->fileoff = RD_LE64 (sp + 32);
-				s->filesize = RD_LE64 (sp + 40);
-				s->maxprot = RD_LE32 (sp + 48);
+				s->vmaddr = r_read_le64 (sp + 16);
+				s->vmsize = r_read_le64 (sp + 24);
+				s->fileoff = r_read_le64 (sp + 32);
+				s->filesize = r_read_le64 (sp + 40);
+				s->maxprot = r_read_le32 (sp + 48);
 				if (!mo->vm_base || s->vmaddr < mo->vm_base) {
 					mo->vm_base = s->vmaddr;
 				}
@@ -176,8 +150,8 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
         const ut8 *buf = mo.file + mo.base + s->fileoff;
         ut64 sz = s->filesize;
         for (ut64 off = 0; off + 16 <= sz; off += 4) {
-            ut32 cnt1 = RD_LE32 (buf + off);
-            ut64 p1 = RD_LE64 (buf + off + 8);
+            ut32 cnt1 = r_read_le32 (buf + off);
+            ut64 p1 = r_read_le64 (buf + off + 8);
             if (cnt1 < 32) continue;
             ut32 good = 0, seen = 0;
             ut32 sample = R_MIN ((ut32)128, cnt1);
@@ -185,7 +159,7 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
                 const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)k * 8);
                 if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)k * 8); }
                 if (!p) break;
-                ut64 val = RD_LE64 (p);
+                ut64 val = r_read_le64 (p);
                 if (val) seen++;
                 if (val < text_lo && mo.vm_base) val += mo.vm_base;
                 if (val >= text_lo && val < text_hi) good++;
@@ -197,7 +171,7 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
                     const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)m * 8);
                     if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)m * 8); }
                     if (!p) break;
-                    ut64 val = RD_LE64 (p);
+                    ut64 val = r_read_le64 (p);
                     if (val < text_lo && mo.vm_base) val += mo.vm_base;
                     if (val >= text_lo && val < text_hi) candidates[m] = val;
                 }
@@ -213,18 +187,18 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
         const ut8 *buf = mo.file + mo.base + s->fileoff;
         ut64 sz = s->filesize;
         for (ut64 off = 0; off + 16 <= sz; off += 4) {
-            ut32 cnt32 = RD_LE32 (buf + off);
+            ut32 cnt32 = r_read_le32 (buf + off);
             /* stricter thresholds to avoid wrong tables */
             if (cnt32 < 64) continue;
             if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) continue;
-            ut64 arrptr = RD_LE64 (buf + off + 8);
+            ut64 arrptr = r_read_le64 (buf + off + 8);
             ut32 good = 0, seen = 0;
             ut32 sample = R_MIN ((ut32)128, cnt32);
             for (ut32 k = 0; k < sample; k++) {
                 const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)k * (ut64)ptrsz);
                 if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)k * (ut64)ptrsz); }
                 if (!p) break;
-                ut64 val = RD_LE64 (p);
+                ut64 val = r_read_le64 (p);
                 // Do not treat 0 as RVA; only add base when non-zero
                 if (val && val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) {
                     val += mo.vm_base;
@@ -239,7 +213,7 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
                     const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)m * (ut64)ptrsz);
                     if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)m * (ut64)ptrsz); }
                     if (!p) break;
-                    ut64 val = RD_LE64 (p);
+                    ut64 val = r_read_le64 (p);
                     if (val && val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) {
                         val += mo.vm_base;
                     }
