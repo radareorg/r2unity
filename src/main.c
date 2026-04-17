@@ -60,8 +60,48 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 	}
 }
 
-static void print_usage (const char *prog_name) {
-	fprintf (stderr, "Usage: %s [-j] [-q] [-l N] [-f] [-a 0xADDR] [-c N] [-S] [-P] [-F text|json|r2] [-v] <executable> <path/to/global-metadata.dat>\n", prog_name);
+static void print_usage (FILE *out, const char *prog_name) {
+#if defined (__APPLE__)
+	const char *host_os = "macOS";
+#elif defined (_WIN32)
+	const char *host_os = "Windows";
+#else
+	const char *host_os = "Linux";
+#endif
+	fprintf (out,
+		"Usage: %s [options] <executable> <global-metadata.dat>\n"
+		"\n"
+		"Options:\n"
+		"  -j            One-line JSON status (ok/version/types/methods/has_ptrs)\n"
+		"  -q            Quiet mode: omit banner and informational comments\n"
+		"  -l N          Limit emitted entries to N\n"
+		"  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers\n"
+		"  -a 0xADDR     Read the method pointer table starting at virtual address 0xADDR\n"
+		"  -c N          Read N pointer entries (pair with -a)\n"
+		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
+		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
+		"  -F FORMAT     Output format for -P: text|json|r2 (default: text)\n"
+		"  -v            Verbose debug tracing on stderr\n"
+		"  -h            Show this help and exit\n"
+		"\n"
+		"Arguments:\n"
+		"  <executable>           Native IL2CPP binary for the target platform\n"
+		"  <global-metadata.dat>  Unity IL2CPP metadata file\n"
+		"\n"
+		"Expected files on this host (%s):\n"
+#if defined (__APPLE__)
+		"  iOS build:          UnityFramework      + global-metadata.dat\n"
+		"                      metadata: ../../Data/Managed/Metadata/global-metadata.dat\n"
+		"  macOS standalone:   GameAssembly.dylib  + global-metadata.dat\n"
+		"                      metadata: ../Resources/Data/il2cpp_data/Metadata/global-metadata.dat\n"
+#elif defined (_WIN32)
+		"  Windows standalone: GameAssembly.dll    + global-metadata.dat\n"
+		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n"
+#else
+		"  Android build:      libil2cpp.so        + global-metadata.dat\n"
+		"                      metadata: ../../assets/bin/Data/Managed/Metadata/global-metadata.dat\n"
+#endif
+		, prog_name, host_os);
 }
 
 static const char *unity_range_from_wire (int wire) {
@@ -362,7 +402,7 @@ int main (int argc, char *argv[]) {
 	bool pinvokes = false;
 	const char *format = "text";
 	int opt;
-	while ((opt = getopt (argc, argv, "jqfvSPl:a:c:F:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjqfvSPl:a:c:F:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'q': quiet = true; break;
@@ -374,13 +414,16 @@ int main (int argc, char *argv[]) {
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
 		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
+		case 'h':
+			print_usage (stdout, argv[0]);
+			return 0;
 		default:
-			print_usage (argv[0]);
+			print_usage (stderr, argv[0]);
 			return 1;
 		}
 	}
 	if (argc - optind != 2) {
-		print_usage (argv[0]);
+		print_usage (stderr, argv[0]);
 		return 1;
 	}
 
