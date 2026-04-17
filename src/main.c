@@ -128,31 +128,35 @@ static void json_escape (FILE *f, const char *s) {
 }
 
 static void print_escaped_literal (FILE *f, const ut8 *buf, size_t len) {
-	for (size_t i = 0; i < len; i++) {
+	size_t i = 0;
+	while (i < len) {
 		unsigned char c = buf[i];
-		switch (c) {
-		case '\\':
-			fputs ("\\\\", f);
-			break;
-		case '"':
-			fputs ("\\\"", f);
-			break;
-		case '\n':
-			fputs ("\\n", f);
-			break;
-		case '\r':
-			fputs ("\\r", f);
-			break;
-		case '\t':
-			fputs ("\\t", f);
-			break;
-		default:
-			if (c >= 0x20 && c < 0x7f) {
-				fputc (c, f);
-			} else {
-				fprintf (f, "\\x%02x", c);
+		if (c < 0x80) {
+			switch (c) {
+			case '\\': fputs ("\\\\", f); break;
+			case '"':  fputs ("\\\"", f); break;
+			case '\n': fputs ("\\n", f); break;
+			case '\r': fputs ("\\r", f); break;
+			case '\t': fputs ("\\t", f); break;
+			default:
+				if (c >= 0x20 && c < 0x7f) {
+					fputc (c, f);
+				} else {
+					fprintf (f, "\\x%02x", c);
+				}
+				break;
 			}
-			break;
+			i++;
+			continue;
+		}
+		RRune ch = 0;
+		int n = r_utf8_decode (buf + i, (int)(len - i), &ch);
+		if (n > 0) {
+			fwrite (buf + i, 1, n, f);
+			i += n;
+		} else {
+			fprintf (f, "\\x%02x", c);
+			i++;
 		}
 	}
 }
