@@ -582,7 +582,7 @@ int main (int argc, char *argv[]) {
 			} else {
 				R_LOG_ERROR ("could not detect Unity IL2CPP layout from %s", input);
 			}
-			return p ? 0 : 1;
+			return 1;
 		}
 		if (json_one_line) {
 			FILE *f = stdout;

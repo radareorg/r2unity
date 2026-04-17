@@ -299,12 +299,138 @@ static bool try_fixture (R2UnityPaths *p, const char *abs, const char *dir, cons
 	return true;
 }
 
+/* When the caller hands us a directory, pick the most specific file inside it
+ * that the per-platform detectors already understand. Probes ordered so that a
+ * layout-bearing location wins over a flat fixture. Returns an absolute path or
+ * NULL if nothing recognisable was found. */
+static char *expand_dir_input (const char *dir) {
+	/* 1. macOS .app bundle: drill into Contents/MacOS to grab the main binary */
+	if (r_str_endswith (dir, ".app")) {
+		char *macos_dir = pjoin2 (dir, "Contents/MacOS");
+		if (r_file_is_directory (macos_dir)) {
+			RList *entries = r_sys_dir (macos_dir);
+			if (entries) {
+				RListIter *it;
+				char *name;
+				r_list_foreach (entries, it, name) {
+					if (*name == '.') {
+						continue;
+					}
+					char *f = pjoin2 (macos_dir, name);
+					if (r_file_is_regular (f)) {
+						r_list_free (entries);
+						free (macos_dir);
+						return f;
+					}
+					free (f);
+				}
+				r_list_free (entries);
+			}
+		}
+		free (macos_dir);
+		/* iOS framework layout */
+		char *ios_fw = pjoin2 (dir, "Frameworks/UnityFramework.framework/UnityFramework");
+		if (r_file_exists (ios_fw)) {
+			return ios_fw;
+		}
+		free (ios_fw);
+		char *ios_flat = pjoin2 (dir, "UnityFramework");
+		if (r_file_exists (ios_flat)) {
+			return ios_flat;
+		}
+		free (ios_flat);
+	}
+	/* 2. Flat layout: any known IL2CPP binary sits directly in the directory. */
+	char *flat = find_il2cpp_sibling (dir);
+	if (flat) {
+		return flat;
+	}
+	/* 3. Windows/Linux standalone: look for a *_Data sibling and pick its stem
+	 *    as the main exe. */
+	RList *entries = r_sys_dir (dir);
+	if (entries) {
+		RListIter *it;
+		char *name;
+		char *found = NULL;
+		r_list_foreach (entries, it, name) {
+			size_t nl = strlen (name);
+			if (nl <= 5 || strcmp (name + nl - 5, "_Data")) {
+				continue;
+			}
+			char *stem = r_str_ndup (name, (int) (nl - 5));
+			char *exe_cand = r_str_newf ("%s/%s.exe", dir, stem);
+			if (r_file_exists (exe_cand)) {
+				free (stem);
+				found = exe_cand;
+				break;
+			}
+			free (exe_cand);
+			char *bin_cand = pjoin2 (dir, stem);
+			if (r_file_exists (bin_cand)) {
+				free (stem);
+				found = bin_cand;
+				break;
+			}
+			free (bin_cand);
+			free (stem);
+		}
+		r_list_free (entries);
+		if (found) {
+			return found;
+		}
+	}
+	/* 4. Android extracted APK: lib/<abi>/libil2cpp.so */
+	char *lib_dir = pjoin2 (dir, "lib");
+	if (r_file_is_directory (lib_dir)) {
+		RList *abis = r_sys_dir (lib_dir);
+		if (abis) {
+			RListIter *it;
+			char *name;
+			char *found = NULL;
+			r_list_foreach (abis, it, name) {
+				if (*name == '.') {
+					continue;
+				}
+				char *so = r_str_newf ("%s/%s/libil2cpp.so", lib_dir, name);
+				if (r_file_exists (so)) {
+					found = so;
+					break;
+				}
+				free (so);
+			}
+			r_list_free (abis);
+			if (found) {
+				free (lib_dir);
+				return found;
+			}
+		}
+	}
+	free (lib_dir);
+	/* 5. Metadata-only directory (still useful for -z style flows) */
+	char *md = pjoin2 (dir, "global-metadata.dat");
+	if (r_file_exists (md)) {
+		return md;
+	}
+	free (md);
+	return NULL;
+}
+
 R_API R2UnityPaths *r2unity_detect_paths (const char *input) {
 	if (R_STR_ISEMPTY (input)) {
 		return NULL;
 	}
 	char *abs = r_file_abspath (input);
-	if (!abs || !r_file_exists (abs)) {
+	if (!abs) {
+		return NULL;
+	}
+	if (r_file_is_directory (abs)) {
+		char *expanded = expand_dir_input (abs);
+		free (abs);
+		if (!expanded) {
+			return NULL;
+		}
+		abs = expanded;
+	} else if (!r_file_exists (abs)) {
 		free (abs);
 		return NULL;
 	}
