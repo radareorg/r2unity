@@ -151,10 +151,51 @@ static inline bool pe_is_data_section (const PeSec *s) {
 	return (s->chars & 0x40) != 0;
 }
 
-R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs) {
-	if (!meta || !pe_path || !out_ptrs) {
+/* Validate the table at VA `arrptr` (`count` pointers): require at least
+ * `min_seen` non-zero entries and `min_good` entries landing in [text_lo, text_hi)
+ * within a 128-entry sample. On match, copy the first method_count entries
+ * into candidates (clamping to count) and return true. */
+static bool pe_probe_table (PeImg *pe, ut64 arrptr, ut32 count, int ptrsz,
+		ut64 text_lo, ut64 text_hi,
+		ut32 min_seen, ut32 min_good,
+		size_t method_count, ut64 *candidates) {
+	ut32 sample = R_MIN ((ut32) 128, count);
+	ut32 good = 0, seen = 0;
+	for (ut32 k = 0; k < sample; k++) {
+		const ut8 *p = pe_vm_to_ptr (pe, arrptr + (ut64) k * (ut64) ptrsz);
+		if (!p) {
+			return false;
+		}
+		ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
+		if (val) {
+			seen++;
+		}
+		if (val >= text_lo && val < text_hi) {
+			good++;
+		}
+	}
+	if (seen < min_seen || good < min_good) {
 		return false;
 	}
+	memset (candidates, 0, method_count * sizeof (ut64));
+	size_t tocopy = R_MIN ((size_t) count, method_count);
+	size_t in_text = 0;
+	for (size_t m = 0; m < tocopy; m++) {
+		const ut8 *p = pe_vm_to_ptr (pe, arrptr + (ut64) m * (ut64) ptrsz);
+		if (!p) {
+			break;
+		}
+		ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
+		if (val >= text_lo && val < text_hi) {
+			candidates[m] = val;
+			in_text++;
+		}
+	}
+	return in_text >= 8;
+}
+
+R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs) {
+	R_RETURN_VAL_IF_FAIL (meta && pe_path && out_ptrs, false);
 	*out_ptrs = NULL;
 	PeImg pe;
 	if (!pe_load (pe_path, &pe)) {
@@ -180,120 +221,40 @@ R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *p
 	int ptrsz = pe.is64 ? 8 : 4;
 	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
 
-	/* CodeRegistration-shaped pair first: {count32, pad?, ptr} */
-	for (int i = 0; i < pe.nsecs && !found; i++) {
-		PeSec *s = &pe.secs[i];
-		if (!pe_is_data_section (s) || s->filesize < (ut64)(8 + ptrsz)) {
-			continue;
-		}
-		const ut8 *buf = pe.file + s->fileoff;
-		ut64 sz = s->filesize;
-		for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
-			ut32 cnt1 = r_read_le32 (buf + off);
-			if (cnt1 < 32) {
+	/* Pass 1: CodeRegistration-shaped pair {count32, pad?, ptr}, loose
+	 * thresholds (small absolute floor). Pass 2: generic {count32, ptr}
+	 * fallback with stricter sample-fraction thresholds. */
+	for (int pass = 0; pass < 2 && !found; pass++) {
+		const ut32 min_count = (pass == 0) ? 32 : 64;
+		for (int i = 0; i < pe.nsecs && !found; i++) {
+			PeSec *s = &pe.secs[i];
+			if (!pe_is_data_section (s) || s->filesize < (ut64) (8 + ptrsz)) {
 				continue;
 			}
-			ut64 p1 = (ptrsz == 8)
-				? r_read_le64 (buf + off + 8)
-				: (ut64) r_read_le32 (buf + off + 4);
-			ut32 good = 0, seen = 0;
-			ut32 sample = R_MIN ((ut32)128, cnt1);
-			for (ut32 k = 0; k < sample; k++) {
-				const ut8 *p = pe_vm_to_ptr (&pe, p1 + (ut64)k * (ut64)ptrsz);
-				if (!p) {
+			const ut8 *buf = pe.file + s->fileoff;
+			for (ut64 off = 0; off + (ut64) (8 + ptrsz) <= s->filesize; off += 4) {
+				ut32 cnt = r_read_le32 (buf + off);
+				if (cnt < min_count) {
+					continue;
+				}
+				if (pass == 1 && expected && (cnt > expected * 2 || cnt < expected / 2)) {
+					continue;
+				}
+				ut64 arrptr = (ptrsz == 8)
+					? r_read_le64 (buf + off + 8)
+					: (ut64) r_read_le32 (buf + off + 4);
+				ut32 sample = R_MIN ((ut32) 128, cnt);
+				ut32 min_seen = (pass == 0) ? 8 : sample / 2;
+				ut32 min_good = (pass == 0) ? 8 : (sample * 3) / 4;
+				if (pe_probe_table (&pe, arrptr, cnt, ptrsz, text_lo, text_hi,
+						min_seen, min_good, method_count, candidates)) {
+					if (r2unity_is_debug ()) {
+						fprintf (stderr, "[r2unity/pe] pass=%d arrptr=0x%"PFMT64x" cnt=%u\n",
+							pass, arrptr, cnt);
+					}
+					found = true;
 					break;
 				}
-				ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
-				if (val) {
-					seen++;
-				}
-				if (val >= text_lo && val < text_hi) {
-					good++;
-				}
-			}
-			if (seen >= 8 && good >= 8) {
-				if (r2unity_is_debug ()) {
-					fprintf (stderr, "[r2unity/pe] codeReg p1=0x%"PFMT64x" cnt1=%u\n", p1, cnt1);
-				}
-				memset (candidates, 0, method_count * sizeof (ut64));
-				size_t tocopy = R_MIN ((size_t) cnt1, method_count);
-				size_t in_text = 0;
-				for (size_t m = 0; m < tocopy; m++) {
-					const ut8 *p = pe_vm_to_ptr (&pe, p1 + (ut64)m * (ut64)ptrsz);
-					if (!p) {
-						break;
-					}
-					ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
-					if (val >= text_lo && val < text_hi) {
-						candidates[m] = val;
-						in_text++;
-					}
-				}
-				if (in_text >= 8) {
-					found = true;
-				}
-				break;
-			}
-		}
-	}
-
-	/* Generic {count32, ptr} fallback */
-	for (int i = 0; i < pe.nsecs && !found; i++) {
-		PeSec *s = &pe.secs[i];
-		if (!pe_is_data_section (s) || s->filesize < (ut64)(8 + ptrsz)) {
-			continue;
-		}
-		const ut8 *buf = pe.file + s->fileoff;
-		ut64 sz = s->filesize;
-		for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
-			ut32 cnt32 = r_read_le32 (buf + off);
-			if (cnt32 < 64) {
-				continue;
-			}
-			if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) {
-				continue;
-			}
-			ut64 arrptr = (ptrsz == 8)
-				? r_read_le64 (buf + off + 8)
-				: (ut64) r_read_le32 (buf + off + 4);
-			ut32 good = 0, seen = 0;
-			ut32 sample = R_MIN ((ut32)128, cnt32);
-			for (ut32 k = 0; k < sample; k++) {
-				const ut8 *p = pe_vm_to_ptr (&pe, arrptr + (ut64)k * (ut64)ptrsz);
-				if (!p) {
-					break;
-				}
-				ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
-				if (val) {
-					seen++;
-				}
-				if (val >= text_lo && val < text_hi) {
-					good++;
-				}
-			}
-			if (seen >= sample / 2 && good >= (sample * 3) / 4) {
-				if (r2unity_is_debug ()) {
-					fprintf (stderr, "[r2unity/pe] arrptr=0x%"PFMT64x" cnt=%u good=%u seen=%u\n",
-						arrptr, cnt32, good, seen);
-				}
-				memset (candidates, 0, method_count * sizeof (ut64));
-				size_t tocopy = R_MIN ((size_t) cnt32, method_count);
-				size_t in_text = 0;
-				for (size_t m = 0; m < tocopy; m++) {
-					const ut8 *p = pe_vm_to_ptr (&pe, arrptr + (ut64)m * (ut64)ptrsz);
-					if (!p) {
-						break;
-					}
-					ut64 val = (ptrsz == 8) ? r_read_le64 (p) : (ut64) r_read_le32 (p);
-					if (val >= text_lo && val < text_hi) {
-						candidates[m] = val;
-						in_text++;
-					}
-				}
-				if (in_text >= 8) {
-					found = true;
-				}
-				break;
 			}
 		}
 	}

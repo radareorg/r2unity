@@ -6,8 +6,9 @@
 #include <unistd.h>
 #include "lib/lib.h"
 
-static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) {
-	/* System.Reflection.MethodAttributes subset */
+/* System.Reflection.MethodAttributes subset. Returns an owned string
+ * (possibly empty) describing the visibility/flags for a managed method. */
+static char *method_attrs (unsigned flags) {
 	enum {
 		MemberAccessMask = 0x0007,
 		MdPrivate        = 0x0001,
@@ -22,46 +23,31 @@ static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) 
 		MdAbstract       = 0x0400,
 		MdPinvokeImpl    = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
 	};
+	static const struct { unsigned bit; const char *name; } bits[] = {
+		{ MdStatic,      "static" },
+		{ MdAbstract,    "abstract" },
+		{ MdVirtual,     "virtual" },
+		{ MdFinal,       "final" },
+		{ MdPinvokeImpl, "extern" },
+	};
 	const char *vis = "";
 	switch (flags & MemberAccessMask) {
-	case MdPublic: vis = "public"; break;
-	case MdFamily: vis = "protected"; break;
-	case MdAssembly: vis = "internal"; break;
-	case MdFamORAssem: vis = "protected internal"; break;
+	case MdPublic:      vis = "public"; break;
+	case MdFamily:      vis = "protected"; break;
+	case MdAssembly:    vis = "internal"; break;
+	case MdFamORAssem:  vis = "protected internal"; break;
 	case MdFamANDAssem: vis = "private protected"; break;
-	case MdPrivate: vis = "private"; break;
-	default: vis = ""; break;
+	case MdPrivate:     vis = "private"; break;
 	}
-	char tmp[128]; tmp[0] = 0;
-	if (*vis) {
-		strncat (tmp, vis, sizeof (tmp) - 1);
+	RStrBuf *sb = r_strbuf_new (*vis ? vis : "");
+	for (size_t i = 0; i < sizeof (bits) / sizeof (bits[0]); i++) {
+		if (flags & bits[i].bit) {
+			r_strbuf_appendf (sb, "%s%s",
+				r_strbuf_length (sb) > 0 ? " " : "",
+				bits[i].name);
+		}
 	}
-	if (flags & MdStatic) {
-		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
-		strncat (tmp, "static", sizeof (tmp) - 1);
-	}
-	if (flags & MdAbstract) {
-		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
-		strncat (tmp, "abstract", sizeof (tmp) - 1);
-	}
-	if (flags & MdVirtual) {
-		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
-		strncat (tmp, "virtual", sizeof (tmp) - 1);
-	}
-	if (flags & MdFinal) {
-		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
-		strncat (tmp, "final", sizeof (tmp) - 1);
-	}
-	if (flags & MdPinvokeImpl) {
-		if (*tmp) strncat (tmp, " ", sizeof (tmp) - 1);
-		strncat (tmp, "extern", sizeof (tmp) - 1);
-	}
-	if (!*tmp) {
-		strncpy (o, "", osz);
-	} else {
-		strncpy (o, tmp, osz);
-		o[osz? osz - 1: 0] = 0;
-	}
+	return r_strbuf_drain (sb);
 }
 
 static void print_usage (FILE *out, const char *prog_name) {
@@ -432,9 +418,7 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 		}
 		for (size_t i = 0; i < n; i++) {
 			R2UnityInterop *it = &items[i];
-			char attrs[128];
-			attrs[0] = 0;
-			build_method_attrs_string (attrs, sizeof (attrs), it->flags);
+			char *attrs = method_attrs (it->flags);
 			printf ("%s\t%s\t%s\t%s\t%s\t%u\n",
 				it->image_name ? it->image_name : "",
 				it->name ? it->name : "",
@@ -442,6 +426,7 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 				it->entry_name ? it->entry_name : "<default>",
 				*attrs ? attrs : "-",
 				(unsigned) it->confidence);
+			free (attrs);
 		}
 		if (!quiet) {
 			printf ("# summary: pinvokes=%zu\n", n);
@@ -508,15 +493,14 @@ static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 		}
 		for (size_t i = 0; i < n; i++) {
 			R2UnityInterop *it = &items[i];
-			char attrs[128];
-			attrs[0] = 0;
-			build_method_attrs_string (attrs, sizeof (attrs), it->flags);
+			char *attrs = method_attrs (it->flags);
 			printf ("%s\t%s\t%s\t%s\t%u\n",
 				it->image_name ? it->image_name : "",
 				it->name ? it->name : "",
 				interop_kind_label (it->kind),
 				*attrs ? attrs : "-",
 				(unsigned) it->confidence);
+			free (attrs);
 		}
 		if (!quiet) {
 			printf ("# summary: reverse_pinvokes=%zu\n", n);
@@ -525,6 +509,137 @@ static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 
 	r2unity_free_interop (items, n);
 	return 0;
+}
+
+static void json_kv_str (FILE *f, const char *key, const char *value) {
+	fprintf (f, "\"%s\":", key);
+	if (value) {
+		fputc ('"', f);
+		json_escape (f, value);
+		fputc ('"', f);
+	} else {
+		fputs ("null", f);
+	}
+}
+
+static int emit_detected_paths (const char *input, bool as_json) {
+	R2UnityPaths *p = r2unity_detect_paths (input);
+	if (!p) {
+		if (as_json) {
+			printf ("{\"ok\":false,\"input\":\"");
+			json_escape (stdout, input);
+			printf ("\"}\n");
+		} else {
+			R_LOG_ERROR ("could not detect Unity IL2CPP layout from %s", input);
+		}
+		return 1;
+	}
+	if (as_json) {
+		FILE *f = stdout;
+		fputs ("{\"ok\":true,", f);
+		json_kv_str (f, "platform", p->platform);
+		fputc (',', f);
+		json_kv_str (f, "main_executable", p->main_executable);
+		fputc (',', f);
+		json_kv_str (f, "il2cpp_binary", p->il2cpp_binary);
+		fputc (',', f);
+		json_kv_str (f, "metadata", p->metadata);
+		fputc (',', f);
+		json_kv_str (f, "data_dir", p->data_dir);
+		fputs ("}\n", f);
+	} else {
+		static const struct { const char *label; size_t offset; } rows[] = {
+			{ "platform:        ", offsetof (R2UnityPaths, platform) },
+			{ "main_executable: ", offsetof (R2UnityPaths, main_executable) },
+			{ "il2cpp_binary:   ", offsetof (R2UnityPaths, il2cpp_binary) },
+			{ "metadata:        ", offsetof (R2UnityPaths, metadata) },
+			{ "data_dir:        ", offsetof (R2UnityPaths, data_dir) },
+		};
+		for (size_t i = 0; i < sizeof (rows) / sizeof (rows[0]); i++) {
+			const char *v = *(char **) ((char *) p + rows[i].offset);
+			printf ("%s%s\n", rows[i].label, v ? v : "-");
+		}
+	}
+	r2unity_free_paths (p);
+	return 0;
+}
+
+/* Sniff the exe magic and dispatch to the matching fast finder. */
+static bool find_method_pointers_fast (R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
+	ut8 magic[4] = {0};
+	FILE *fp = fopen (path, "rb");
+	if (fp) {
+		(void) fread (magic, 1, 4, fp);
+		fclose (fp);
+	}
+	if (!memcmp (magic, "\x7f" "ELF", 4)) {
+		return r2unity_find_method_pointers_elf (meta, path, out_ptrs);
+	}
+	ut32 m = r_read_le32 (magic);
+	if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
+		return r2unity_find_method_pointers_macho (meta, path, out_ptrs);
+	}
+	if (magic[0] == 'M' && magic[1] == 'Z') {
+		return r2unity_find_method_pointers_pe (meta, path, out_ptrs);
+	}
+	return false;
+}
+
+/* Emit one method as r2 script commands. Methods without a plausible native
+ * address (addr <= 0x1000) are skipped entirely and do not count against the
+ * emit limit. Returns true when output was produced. */
+static bool emit_r2_method (R2UnityMetadata *meta,
+		const Il2CppMethodDefinition *m,
+		const Il2CppTypeDefinition *td,
+		const Il2CppImageDefinition *img,
+		bool have_img_map,
+		ut64 addr) {
+	if (addr <= 0x1000) {
+		return false;
+	}
+	char *mn = (char *) r2unity_get_string (meta, m->nameIndex);
+	if (!mn) {
+		return false;
+	}
+	char *ns = td ? (char *) r2unity_get_string (meta, td->namespaceIndex) : NULL;
+	char *tn = td ? (char *) r2unity_get_string (meta, td->nameIndex) : NULL;
+	char fullname[1024];
+	unsigned pc = (unsigned) m->parameterCount;
+	if (ns && *ns) {
+		snprintf (fullname, sizeof (fullname), "%s.%s.%s(%u)", ns, tn ? tn : "", mn, pc);
+	} else if (tn && *tn) {
+		snprintf (fullname, sizeof (fullname), "%s.%s(%u)", tn, mn, pc);
+	} else {
+		snprintf (fullname, sizeof (fullname), "%s(%u)", mn, pc);
+	}
+	free (ns);
+	free (tn);
+	free (mn);
+	/* No image map context: fall back to a plain comment. */
+	if (!have_img_map || !td) {
+		printf ("# %s\n", fullname);
+		return true;
+	}
+	r_name_filter (fullname, -1);
+	char *attrs = method_attrs (m->flags);
+	char *im = img ? (char *) r2unity_get_string (meta, img->nameIndex) : NULL;
+	if (im && *im) {
+		printf ("'@0x%"PFMT64x"'f sym.unity.%s.%s\n", addr, im, fullname);
+		printf ("'@0x%"PFMT64x"'CCu Method: [%s]%s%s %s\n",
+			addr, im, *attrs ? " " : "", attrs, fullname);
+	} else if (img) {
+		printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+		printf ("'@0x%"PFMT64x"'CCu Method:%s%s %s\n",
+			addr, *attrs ? " " : "", attrs, fullname);
+	} else {
+		printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+		if (*attrs) {
+			printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, attrs);
+		}
+	}
+	free (im);
+	free (attrs);
+	return true;
 }
 
 int main (int argc, char *argv[]) {
@@ -574,52 +689,7 @@ int main (int argc, char *argv[]) {
 			print_usage (stderr, argv[0]);
 			return 1;
 		}
-		const char *input = argv[optind];
-		R2UnityPaths *p = r2unity_detect_paths (input);
-		if (!p) {
-			if (json_one_line) {
-				printf ("{\"ok\":false,\"input\":\"");
-				json_escape (stdout, input);
-				printf ("\"}\n");
-			} else {
-				R_LOG_ERROR ("could not detect Unity IL2CPP layout from %s", input);
-			}
-			return 1;
-		}
-		if (json_one_line) {
-			FILE *f = stdout;
-			fprintf (f, "{\"ok\":true,\"platform\":\"");
-			json_escape (f, p->platform ? p->platform : "");
-			fprintf (f, "\",\"main_executable\":\"");
-			json_escape (f, p->main_executable ? p->main_executable : "");
-			fprintf (f, "\",\"il2cpp_binary\":");
-			if (p->il2cpp_binary) {
-				fputc ('"', f);
-				json_escape (f, p->il2cpp_binary);
-				fputc ('"', f);
-			} else {
-				fprintf (f, "null");
-			}
-			fprintf (f, ",\"metadata\":\"");
-			json_escape (f, p->metadata ? p->metadata : "");
-			fprintf (f, "\",\"data_dir\":");
-			if (p->data_dir) {
-				fputc ('"', f);
-				json_escape (f, p->data_dir);
-				fputc ('"', f);
-			} else {
-				fprintf (f, "null");
-			}
-			fprintf (f, "}\n");
-		} else {
-			printf ("platform:        %s\n", p->platform ? p->platform : "-");
-			printf ("main_executable: %s\n", p->main_executable ? p->main_executable : "-");
-			printf ("il2cpp_binary:   %s\n", p->il2cpp_binary ? p->il2cpp_binary : "-");
-			printf ("metadata:        %s\n", p->metadata ? p->metadata : "-");
-			printf ("data_dir:        %s\n", p->data_dir ? p->data_dir : "-");
-		}
-		r2unity_free_paths (p);
-		return 0;
+		return emit_detected_paths (argv[optind], json_one_line);
 	}
 	if (string_literals) {
 		if (json_one_line || fast || gmp_addr || sbom || pinvokes || reverse_pinvokes) {
@@ -700,30 +770,16 @@ int main (int argc, char *argv[]) {
 	if (gmp_addr) {
 		has_ptrs = r2unity_read_method_pointers_at (meta, exe_path, gmp_addr, gmp_count, &method_ptrs);
 	} else if (fast) {
-		/* Auto-detect file type by magic */
-		unsigned char magic[4] = {0};
-		FILE *fp = fopen (exe_path, "rb");
-		if (fp) {
-			(void)fread (magic, 1, 4, fp);
-			fclose (fp);
-		}
-		ut32 m = (ut32)magic[0] | ((ut32)magic[1] << 8) | ((ut32)magic[2] << 16) | ((ut32)magic[3] << 24);
-		if (magic[0] == 0x7f && magic[1] == 'E' && magic[2] == 'L' && magic[3] == 'F') {
-			has_ptrs = r2unity_find_method_pointers_elf (meta, exe_path, &method_ptrs);
-		} else if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
-			has_ptrs = r2unity_find_method_pointers_macho (meta, exe_path, &method_ptrs);
-		} else if (magic[0] == 'M' && magic[1] == 'Z') {
-			has_ptrs = r2unity_find_method_pointers_pe (meta, exe_path, &method_ptrs);
-		} else {
-			has_ptrs = false;
-		}
-	} else {
-		has_ptrs = false;
+		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
 	}
-	// Recompute has_ptrs by checking any non-zero entry
-	if (method_ptrs) {
+	/* Fast-path may prealloc an all-zero table; upgrade has_ptrs only if any
+	 * non-zero entry survived. */
+	if (method_ptrs && !has_ptrs) {
 		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k]) { has_ptrs = true; break; }
+			if (method_ptrs[k]) {
+				has_ptrs = true;
+				break;
+			}
 		}
 	}
 
@@ -744,118 +800,47 @@ int main (int argc, char *argv[]) {
 		printf ("# Input file: %s\n\n", metadata_path);
 	}
 
-	long printed = 0;
-	// Keep 1:1 mapping between method index and pointer index.
-	// Do NOT shift, gaps (zeros) are expected for abstract/generic/external methods.
-	size_t mp_shift = 0;
-	// Optionally enrich names with image/module prefix
+	/* Build a typeIndex -> imageIndex map so method output can be prefixed with
+	 * the owning DLL name. Keep method_ptrs 1:1 with method_definitions — gaps
+	 * (zeros) are expected for abstract/generic/external methods. */
 	size_t img_count = 0;
-	Il2CppImageDefinition *images = NULL;
+	Il2CppImageDefinition *images = r2unity_get_images (meta, &img_count);
 	int *type2img = NULL;
-	images = r2unity_get_images (meta, &img_count);
 	if (images && type_count > 0) {
 		type2img = R_NEWS (int, type_count);
-		for (size_t ti = 0; ti < type_count; ti++) type2img[ti] = -1;
+		for (size_t ti = 0; ti < type_count; ti++) {
+			type2img[ti] = -1;
+		}
 		for (size_t ii = 0; ii < img_count; ii++) {
 			int start = images[ii].typeStart;
 			int count = (int) images[ii].typeCount;
-			if (start >= 0 && count > 0) {
-				for (int k = 0; k < count && (size_t)(start + k) < type_count; k++) {
-					type2img[start + k] = (int) ii;
-				}
+			for (int k = 0; k < count && start >= 0 && (size_t) (start + k) < type_count; k++) {
+				type2img[start + k] = (int) ii;
 			}
 		}
 	}
 
-	// Print methods first, then types, to ensure RVAs are shown in limited output
-	if (methods && types && (limit < 0 || printed < limit)) {
+	long printed = 0;
+	if (methods && types) {
 		for (size_t j = 0; j < method_count; j++) {
+			if (limit >= 0 && printed >= limit) {
+				break;
+			}
 			Il2CppMethodDefinition *m = &methods[j];
 			const Il2CppTypeDefinition *td = NULL;
 			if (m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
 				td = &types[m->declaringType];
 			}
-			char *ns = td ? (char *) r2unity_get_string (meta, td->namespaceIndex) : NULL;
-			char *tn = td ? (char *) r2unity_get_string (meta, td->nameIndex) : NULL;
-			char *mn = (char *) r2unity_get_string (meta, m->nameIndex);
-			if (mn) {
-				char fullname[1024];
-				fullname[0] = 0;
-				if (ns && *ns) {
-					snprintf (fullname, sizeof (fullname), "%s.%s.%s(%u)", ns, tn ? tn : "", mn, (unsigned) m->parameterCount);
-				} else if (tn && *tn) {
-					snprintf (fullname, sizeof (fullname), "%s.%s(%u)", tn, mn, (unsigned) m->parameterCount);
-				} else {
-					snprintf (fullname, sizeof (fullname), "%s(%u)", mn, (unsigned) m->parameterCount);
+			ut64 addr = (has_ptrs && method_ptrs) ? method_ptrs[j] : 0;
+			const Il2CppImageDefinition *img = NULL;
+			if (type2img && td) {
+				int ii = type2img[m->declaringType];
+				if (ii >= 0 && (size_t) ii < img_count) {
+					img = &images[ii];
 				}
-				ut64 addr = 0;
-				if (has_ptrs && method_ptrs) {
-					size_t idx = j + mp_shift;
-					if (idx < method_count) {
-						addr = method_ptrs[idx];
-					}
-				}
-					if (limit < 0 || printed < limit) {
-						if (addr > 0x1000) {
-							r_name_filter (fullname, -1);
-							if (type2img && td) {
-								int ii = type2img[m->declaringType];
-								if (ii >= 0 && (size_t)ii < img_count) {
-									char *im = (char *) r2unity_get_string (meta, images[ii].nameIndex);
-									if (im && *im) {
-									printf ("'@0x%"PFMT64x"'f sym.unity.%s.%s\n", addr, im, fullname);
-									char attrs[128]; attrs[0] = 0; build_method_attrs_string (attrs, sizeof (attrs), m->flags);
-									if (*attrs) {
-										printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s %s\n", addr, im, attrs, fullname);
-									} else {
-										printf ("'@0x%"PFMT64x"'CCu Method: [%s] %s\n", addr, im, fullname);
-									}
-										free (im);
-									} else {
-									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-									char attrs2[128]; attrs2[0] = 0; build_method_attrs_string (attrs2, sizeof (attrs2), m->flags);
-									if (*attrs2) {
-										printf ("'@0x%"PFMT64x"'CCu Method: %s %s\n", addr, attrs2, fullname);
-									} else {
-										printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
-									}
-									}
-								} else {
-									printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-									char attrs3[128]; attrs3[0] = 0; build_method_attrs_string (attrs3, sizeof (attrs3), m->flags);
-									if (*attrs3) {
-										printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, attrs3);
-									}
-								}
-							} else {
-							printf ("# %s\n", fullname);
-						}
-						printed++;
-					}
 			}
-			free (ns);
-			free (tn);
-			free (mn);
-			if (limit >= 0 && printed >= limit) {
-				break;
-			}
-			}
-		}
-	}
-
-	if (types && (limit < 0 || printed < limit)) {
-		for (size_t j = 0; j < type_count; j++) {
-			char *type_name = (char *) r2unity_get_string (meta, types[j].nameIndex);
-			char *namespace_name = (char *) r2unity_get_string (meta, types[j].namespaceIndex);
-			if (type_name) {
-					if (limit < 0 || printed < limit) {
-						printed++;
-					}
-			}
-			free (type_name);
-			free (namespace_name);
-			if (limit >= 0 && printed >= limit) {
-				break;
+			if (emit_r2_method (meta, m, td, img, type2img != NULL, addr)) {
+				printed++;
 			}
 		}
 	}

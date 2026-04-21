@@ -120,8 +120,61 @@ static inline const ut8 *macho_vm_to_ptr (MachO *mo, ut64 vmaddr) {
 	return NULL;
 }
 
+/* Evaluate the table at VA `arrptr` with `count` 8-byte pointers. Entries
+ * below text_lo are retried with vm_base added (RVA→VA fallback). */
+static bool macho_probe_table (MachO *mo, ut64 arrptr, ut32 count,
+		ut64 text_lo, ut64 text_hi,
+		ut32 min_seen, ut32 min_good,
+		size_t method_count, ut64 *candidates) {
+	ut32 sample = R_MIN ((ut32) 128, count);
+	ut32 good = 0, seen = 0;
+	for (ut32 k = 0; k < sample; k++) {
+		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64) k * 8);
+		if (!p && mo->vm_base) {
+			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64) k * 8);
+		}
+		if (!p) {
+			return false;
+		}
+		ut64 val = r_read_le64 (p);
+		if (val && val < text_lo && mo->vm_base
+			&& (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
+			val += mo->vm_base;
+		}
+		if (val) {
+			seen++;
+		}
+		if (val >= text_lo && val < text_hi) {
+			good++;
+		}
+	}
+	if (seen < min_seen || good < min_good) {
+		return false;
+	}
+	memset (candidates, 0, method_count * sizeof (ut64));
+	size_t tocopy = R_MIN ((size_t) count, method_count);
+	for (size_t m = 0; m < tocopy; m++) {
+		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64) m * 8);
+		if (!p && mo->vm_base) {
+			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64) m * 8);
+		}
+		if (!p) {
+			break;
+		}
+		ut64 val = r_read_le64 (p);
+		if (val && val < text_lo && mo->vm_base
+			&& (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
+			val += mo->vm_base;
+		}
+		if (val >= text_lo && val < text_hi) {
+			candidates[m] = val;
+		}
+	}
+	return true;
+}
+
 R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs) {
-	if (!meta || !macho_path || !out_ptrs) return false;
+	R_RETURN_VAL_IF_FAIL (meta && macho_path && out_ptrs, false);
 	*out_ptrs = NULL;
 	MachO mo;
 	if (!macho_load (macho_path, &mo)) {
@@ -141,89 +194,44 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 	}
 	bool found = false;
 	int ptrsz = 8;
-	ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
-    // Try CodeRegistration-like pairs first
-    for (int i = 0; i < mo.nsegs && !found; i++) {
-        MachSeg *s = &mo.segs[i];
-        bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
-        if (!is_data || s->filesize < (16 + 8)) continue;
-        const ut8 *buf = mo.file + mo.base + s->fileoff;
-        ut64 sz = s->filesize;
-        for (ut64 off = 0; off + 16 <= sz; off += 4) {
-            ut32 cnt1 = r_read_le32 (buf + off);
-            ut64 p1 = r_read_le64 (buf + off + 8);
-            if (cnt1 < 32) continue;
-            ut32 good = 0, seen = 0;
-            ut32 sample = R_MIN ((ut32)128, cnt1);
-            for (ut32 k = 0; k < sample; k++) {
-                const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)k * 8);
-                if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)k * 8); }
-                if (!p) break;
-                ut64 val = r_read_le64 (p);
-                if (val) seen++;
-                if (val < text_lo && mo.vm_base) val += mo.vm_base;
-                if (val >= text_lo && val < text_hi) good++;
-            }
-            if (seen >= 8 && good >= 8) {
-                if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/macho] codeReg p1=0x%"PFMT64x" cnt1=%u\n", p1, cnt1);
-                memset (candidates, 0, method_count * sizeof (ut64));
-                for (size_t m = 0; m < method_count && m < cnt1; m++) {
-                    const ut8 *p = macho_vm_to_ptr (&mo, p1 + (ut64)m * 8);
-                    if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + p1 + (ut64)m * 8); }
-                    if (!p) break;
-                    ut64 val = r_read_le64 (p);
-                    if (val < text_lo && mo.vm_base) val += mo.vm_base;
-                    if (val >= text_lo && val < text_hi) candidates[m] = val;
-                }
-                found = true;
-                break;
-            }
-        }
-    }
-    for (int i = 0; i < mo.nsegs && !found; i++) {
-        MachSeg *s = &mo.segs[i];
-        bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
-        if (!is_data || s->filesize < (8 + 8)) continue;
-        const ut8 *buf = mo.file + mo.base + s->fileoff;
-        ut64 sz = s->filesize;
-        for (ut64 off = 0; off + 16 <= sz; off += 4) {
-            ut32 cnt32 = r_read_le32 (buf + off);
-            /* stricter thresholds to avoid wrong tables */
-            if (cnt32 < 64) continue;
-            if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) continue;
-            ut64 arrptr = r_read_le64 (buf + off + 8);
-            ut32 good = 0, seen = 0;
-            ut32 sample = R_MIN ((ut32)128, cnt32);
-            for (ut32 k = 0; k < sample; k++) {
-                const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)k * (ut64)ptrsz);
-                if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)k * (ut64)ptrsz); }
-                if (!p) break;
-                ut64 val = r_read_le64 (p);
-                // Do not treat 0 as RVA; only add base when non-zero
-                if (val && val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) {
-                    val += mo.vm_base;
-                }
-                if (val) seen++;
-                if (val >= text_lo && val < text_hi) good++;
-            }
-            if (seen >= sample / 2 && good >= (sample * 3) / 4) {
-                if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/macho] arrptr=0x%"PFMT64x" cnt=%u good=%u seen=%u\n", arrptr, cnt32, good, seen);
-                memset (candidates, 0, method_count * sizeof (ut64));
-                for (size_t m = 0; m < method_count && m < cnt32; m++) {
-                    const ut8 *p = macho_vm_to_ptr (&mo, arrptr + (ut64)m * (ut64)ptrsz);
-                    if (!p && mo.vm_base) { p = macho_vm_to_ptr (&mo, mo.vm_base + arrptr + (ut64)m * (ut64)ptrsz); }
-                    if (!p) break;
-                    ut64 val = r_read_le64 (p);
-                    if (val && val < text_lo && mo.vm_base && (val + mo.vm_base) >= text_lo && (val + mo.vm_base) < text_hi) {
-                        val += mo.vm_base;
-                    }
-                    if (val >= text_lo && val < text_hi) candidates[m] = val;
-                }
-                found = true;
-                break;
-            }
-        }
-    }
+	ut32 expected = (ut32) R_MAX ((ut64) 64, (ut64) method_count);
+	(void) ptrsz;  /* Mach-O fast path is 64-bit only. */
+	/* Pass 0: CodeRegistration-shaped pair {count32, pad, ptr64}.
+	 * Pass 1: generic {count32, ptr64} with expected-count bounds and
+	 * stricter sample-fraction thresholds. */
+	for (int pass = 0; pass < 2 && !found; pass++) {
+		const ut32 min_count = (pass == 0) ? 32 : 64;
+		for (int i = 0; i < mo.nsegs && !found; i++) {
+			MachSeg *s = &mo.segs[i];
+			bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
+			if (!is_data || s->filesize < 16) {
+				continue;
+			}
+			const ut8 *buf = mo.file + mo.base + s->fileoff;
+			for (ut64 off = 0; off + 16 <= s->filesize; off += 4) {
+				ut32 cnt = r_read_le32 (buf + off);
+				if (cnt < min_count) {
+					continue;
+				}
+				if (pass == 1 && expected && (cnt > expected * 2 || cnt < expected / 2)) {
+					continue;
+				}
+				ut64 arrptr = r_read_le64 (buf + off + 8);
+				ut32 sample = R_MIN ((ut32) 128, cnt);
+				ut32 min_seen = (pass == 0) ? 8 : sample / 2;
+				ut32 min_good = (pass == 0) ? 8 : (sample * 3) / 4;
+				if (macho_probe_table (&mo, arrptr, cnt, text_lo, text_hi,
+						min_seen, min_good, method_count, candidates)) {
+					if (r2unity_is_debug ()) {
+						fprintf (stderr, "[r2unity/macho] pass=%d arrptr=0x%"PFMT64x" cnt=%u\n",
+							pass, arrptr, cnt);
+					}
+					found = true;
+					break;
+				}
+			}
+		}
+	}
 	if (!found) {
 		R_FREE (candidates);
 		macho_free (&mo);

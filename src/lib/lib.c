@@ -52,88 +52,54 @@ static bool is_v24_0 (R2UnityMetadata *meta) {
 }
 
 R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
-	if (!buf) {
-		return NULL;
-	}
-	R2UnityMetadata *meta = R_NEW0 (R2UnityMetadata);
-	if (!meta) {
-		return NULL;
-	}
-	// Read sanity and version from the on-disk little-endian layout.
+	R_RETURN_VAL_IF_FAIL (buf, NULL);
 	ut8 preamble[8];
 	if (r_buf_read_at (buf, 0, preamble, sizeof (preamble)) != (st64) sizeof (preamble)) {
-		R_FREE (meta);
 		return NULL;
 	}
-	uint32_t sanity = r_read_le32 (preamble);
-	if (sanity != IL2CPP_MAGIC) {
-		R_FREE (meta);
+	if (r_read_le32 (preamble) != IL2CPP_MAGIC) {
 		return NULL;
 	}
 	int32_t version = (int32_t) r_read_le32 (preamble + 4);
-	meta->version = version;
-	size_t header_size = 0;
 	if (version < 24 || version > 31) {
-		R_FREE (meta);
 		return NULL;
 	}
+	size_t header_size;
 	if (version < 27) {
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v24);
 	} else if (version < 29) {
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v27);
 	} else {
-		// versions 29 and above (e.g. 30, 31) are compatible for the fields we use
+		/* v29+ shares layout (v30, v31 reuse these fields). */
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v29);
 	}
-	// read full header for selected version
+	R2UnityMetadata *meta = R_NEW0 (R2UnityMetadata);
+	meta->version = version;
+	meta->buf = buf;
 	if (r_buf_read_at (buf, 0, (ut8 *) &meta->header.v24, header_size) != (st64) header_size) {
 		R_FREE (meta);
 		return NULL;
 	}
-	// Normalize header from on-disk little-endian to native byte order.
-	// Every field in the Il2Cpp header structs is a 32-bit word, so a single
-	// in-place r_read_le32 sweep handles all versions and is a no-op on LE hosts.
+	/* All Il2Cpp header fields are 32-bit words; sweep in-place for BE hosts
+	 * (no-op on LE). This also normalises the fields accessed below. */
 	uint32_t *hdr_words = (uint32_t *) &meta->header;
 	size_t nfields = header_size / sizeof (uint32_t);
 	for (size_t i = 0; i < nfields; i++) {
 		hdr_words[i] = r_read_le32 (&hdr_words[i]);
 	}
-	meta->buf = buf;
-	/* Normalize header fields depending on version to simplify later access */
-	if (meta->version < 27) {
-		meta->stringOffset = meta->header.v24.stringOffset;
-		meta->stringSize = meta->header.v24.stringSize;
-		meta->stringLiteralOffset = meta->header.v24.stringLiteralOffset;
-		meta->stringLiteralSize = meta->header.v24.stringLiteralSize;
-		meta->stringLiteralDataOffset = meta->header.v24.stringLiteralDataOffset;
-		meta->stringLiteralDataSize = meta->header.v24.stringLiteralDataSize;
-		meta->methodsOffset = meta->header.v24.methodsOffset;
-		meta->methodsSize = meta->header.v24.methodsSize;
-		meta->typeDefinitionsOffset = meta->header.v24.typeDefinitionsOffset;
-		meta->typeDefinitionsSize = meta->header.v24.typeDefinitionsSize;
-	} else if (meta->version < 29) {
-		meta->stringOffset = meta->header.v27.stringOffset;
-		meta->stringSize = meta->header.v27.stringSize;
-		meta->stringLiteralOffset = meta->header.v27.stringLiteralOffset;
-		meta->stringLiteralSize = meta->header.v27.stringLiteralSize;
-		meta->stringLiteralDataOffset = meta->header.v27.stringLiteralDataOffset;
-		meta->stringLiteralDataSize = meta->header.v27.stringLiteralDataSize;
-		meta->methodsOffset = meta->header.v27.methodsOffset;
-		meta->methodsSize = meta->header.v27.methodsSize;
-		meta->typeDefinitionsOffset = meta->header.v27.typeDefinitionsOffset;
-		meta->typeDefinitionsSize = meta->header.v27.typeDefinitionsSize;
-	} else {
-		meta->stringOffset = meta->header.v29.stringOffset;
-		meta->stringSize = meta->header.v29.stringSize;
-		meta->stringLiteralOffset = meta->header.v29.stringLiteralOffset;
-		meta->stringLiteralSize = meta->header.v29.stringLiteralSize;
-		meta->stringLiteralDataOffset = meta->header.v29.stringLiteralDataOffset;
-		meta->stringLiteralDataSize = meta->header.v29.stringLiteralDataSize;
-		meta->methodsOffset = meta->header.v29.methodsOffset;
-		meta->methodsSize = meta->header.v29.methodsSize;
-		meta->typeDefinitionsOffset = meta->header.v29.typeDefinitionsOffset;
-		meta->typeDefinitionsSize = meta->header.v29.typeDefinitionsSize;
-	}
+	/* v24/v27/v29 share identical layout for fields up to exportedTypeDefinitions,
+	 * so accessing them via the v24 view is valid for every supported version. */
+	const Il2CppGlobalMetadataHeader_v24 *h = &meta->header.v24;
+	meta->stringOffset = h->stringOffset;
+	meta->stringSize = h->stringSize;
+	meta->stringLiteralOffset = h->stringLiteralOffset;
+	meta->stringLiteralSize = h->stringLiteralSize;
+	meta->stringLiteralDataOffset = h->stringLiteralDataOffset;
+	meta->stringLiteralDataSize = h->stringLiteralDataSize;
+	meta->methodsOffset = h->methodsOffset;
+	meta->methodsSize = h->methodsSize;
+	meta->typeDefinitionsOffset = h->typeDefinitionsOffset;
+	meta->typeDefinitionsSize = h->typeDefinitionsSize;
 	if (meta->version == 24 && is_v24_0 (meta)) {
 		R_LOG_ERROR ("v24.0 metadata (Unity 5.6..2018.2) not supported: "
 			"TypeDefinition/MethodDefinition/ImageDefinition row layouts "
@@ -150,7 +116,6 @@ R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf) {
 			(int) meta->methodsSize, (unsigned) meta->methodsOffset,
 			(int) meta->typeDefinitionsSize, (unsigned) meta->typeDefinitionsOffset);
 	}
-
 	return meta;
 }
 
@@ -164,7 +129,8 @@ R_API void r2unity_free_metadata (R2UnityMetadata *meta) {
 }
 
 R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index) {
-	if (!meta || !meta->strings || index >= r_buf_size (meta->strings)) {
+	R_RETURN_VAL_IF_FAIL (meta, NULL);
+	if (!meta->strings || index >= r_buf_size (meta->strings)) {
 		return NULL;
 	}
 	// Align index to the beginning of the string in case it points mid-string
@@ -193,9 +159,7 @@ R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index) {
 }
 
 R_API Il2CppStringLiteral *r2unity_get_string_literals (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
 	if (!meta->string_literals || meta->stringLiteralSize < 8 || (meta->stringLiteralSize % 8) != 0) {
 		return NULL;
@@ -228,9 +192,7 @@ R_API Il2CppStringLiteral *r2unity_get_string_literals (R2UnityMetadata *meta, s
 }
 
 R_API bool r2unity_read_string_literal (R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len) {
-	if (!meta || !lit || !out_bytes || !out_len) {
-		return false;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && lit && out_bytes && out_len, false);
 	*out_bytes = NULL;
 	*out_len = 0;
 	if (lit->length == 0) {
@@ -254,9 +216,7 @@ R_API bool r2unity_read_string_literal (R2UnityMetadata *meta, const Il2CppStrin
 }
 
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	// On-disk Il2CppTypeDefinition is 88 bytes for v24+ (little-endian)
 	const ut64 entry = 88;
 	ut64 tsize = (ut64) (ut64) meta->typeDefinitionsSize;
@@ -313,9 +273,7 @@ R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta,
 }
 
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	/* On-disk Il2CppMethodDefinition:
 	 *   v24.1 - v30: 32 bytes
 	 *   v31+:        36 bytes (returnParameterToken inserted at +12,
@@ -368,25 +326,11 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *m
 }
 
 R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	ut64 ioff = 0;
-	ut64 isize = 0;
-	if (meta->version < 27) {
-		off_t o = meta->header.v24.imagesOffset;
-		ioff = (ut64) o;
-		isize = (ut64) meta->header.v24.imagesSize;
-	} else if (meta->version < 29) {
-		off_t o = meta->header.v27.imagesOffset;
-		ioff = (ut64) o;
-		isize = (ut64) meta->header.v27.imagesSize;
-	} else {
-		off_t o = meta->header.v29.imagesOffset;
-		ioff = (ut64) o;
-		isize = (ut64) meta->header.v29.imagesSize;
-	}
+	/* Common-field offsets are identical across v24/v27/v29 headers. */
+	ut64 ioff = meta->header.v24.imagesOffset;
+	ut64 isize = meta->header.v24.imagesSize;
 	if (!isize) {
 		return NULL;
 	}
@@ -423,39 +367,12 @@ R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *
 	return imgs;
 }
 
-static void get_assemblies_section (R2UnityMetadata *meta, ut64 *out_off, ut64 *out_size) {
-	if (meta->version < 27) {
-		*out_off = (ut64) meta->header.v24.assembliesOffset;
-		*out_size = (ut64) meta->header.v24.assembliesSize;
-	} else if (meta->version < 29) {
-		*out_off = (ut64) meta->header.v27.assembliesOffset;
-		*out_size = (ut64) meta->header.v27.assembliesSize;
-	} else {
-		*out_off = (ut64) meta->header.v29.assembliesOffset;
-		*out_size = (ut64) meta->header.v29.assembliesSize;
-	}
-}
-
-static void get_referenced_section (R2UnityMetadata *meta, ut64 *out_off, ut64 *out_size) {
-	if (meta->version < 27) {
-		*out_off = (ut64) meta->header.v24.referencedAssembliesOffset;
-		*out_size = (ut64) meta->header.v24.referencedAssembliesSize;
-	} else if (meta->version < 29) {
-		*out_off = (ut64) meta->header.v27.referencedAssembliesOffset;
-		*out_size = (ut64) meta->header.v27.referencedAssembliesSize;
-	} else {
-		*out_off = (ut64) meta->header.v29.referencedAssembliesOffset;
-		*out_size = (ut64) meta->header.v29.referencedAssembliesSize;
-	}
-}
-
 R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	ut64 aoff = 0, asize = 0;
-	get_assemblies_section (meta, &aoff, &asize);
+	/* Common-field offsets are identical across v24/v27/v29 headers. */
+	ut64 aoff = meta->header.v24.assembliesOffset;
+	ut64 asize = meta->header.v24.assembliesSize;
 	if (!asize) {
 		return NULL;
 	}
@@ -543,12 +460,10 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, s
 }
 
 R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	ut64 roff = 0, rsize = 0;
-	get_referenced_section (meta, &roff, &rsize);
+	ut64 roff = meta->header.v24.referencedAssembliesOffset;
+	ut64 rsize = meta->header.v24.referencedAssembliesSize;
 	if (rsize < 4 || (rsize % 4) != 0) {
 		return NULL;
 	}
@@ -578,8 +493,56 @@ R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t 
 }
 
 R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs) {
-	(void) meta; (void) exe_path; (void) addr; (void) count; (void) out_ptrs;
+	R_RETURN_VAL_IF_FAIL (meta && exe_path && out_ptrs, false);
+	(void) addr;
+	(void) count;
 	return false;
+}
+
+/* Per-image sorted (token, method_idx) index used for scoped token lookups.
+ * Method tokens are only unique within their owning image. */
+typedef struct { uint32_t token; int32_t idx; } R2UTokIdx;
+
+static int cmp_tokidx (const void *a, const void *b) {
+	uint32_t ta = ((const R2UTokIdx *) a)->token;
+	uint32_t tb = ((const R2UTokIdx *) b)->token;
+	return (ta < tb) ? -1 : (ta > tb);
+}
+
+/* Build a typeIndex -> imageIndex map once per enumeration pass. Returns NULL
+ * if no images are known or the type table is empty. */
+static int *build_type2img (const Il2CppImageDefinition *images, size_t image_count,
+		size_t type_count) {
+	if (!images || !type_count) {
+		return NULL;
+	}
+	int *type2img = R_NEWS (int, type_count);
+	if (!type2img) {
+		return NULL;
+	}
+	for (size_t ti = 0; ti < type_count; ti++) {
+		type2img[ti] = -1;
+	}
+	for (size_t ii = 0; ii < image_count; ii++) {
+		int start = images[ii].typeStart;
+		int tcount = (int) images[ii].typeCount;
+		if (start < 0 || tcount <= 0) {
+			continue;
+		}
+		for (int k = 0; k < tcount && (size_t) (start + k) < type_count; k++) {
+			type2img[start + k] = (int) ii;
+		}
+	}
+	return type2img;
+}
+
+/* Resolve the owning image (DLL) of a given method via its declaring type. */
+static int image_index_for_method (const int *type2img, size_t type_count,
+		const Il2CppMethodDefinition *m) {
+	if (!type2img || m->declaringType < 0 || (size_t) m->declaringType >= type_count) {
+		return -1;
+	}
+	return type2img[m->declaringType];
 }
 
 static char *build_qualified_name (R2UnityMetadata *meta,
@@ -608,9 +571,7 @@ static char *build_qualified_name (R2UnityMetadata *meta,
 }
 
 R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
 
 	size_t method_count = 0;
@@ -623,27 +584,7 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t 
 	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
 	size_t image_count = 0;
 	Il2CppImageDefinition *images = r2unity_get_images (meta, &image_count);
-
-	/* Build typeIndex -> imageIndex map once. */
-	int *type2img = NULL;
-	if (images && type_count) {
-		type2img = R_NEWS (int, type_count);
-		if (type2img) {
-			for (size_t ti = 0; ti < type_count; ti++) {
-				type2img[ti] = -1;
-			}
-			for (size_t ii = 0; ii < image_count; ii++) {
-				int start = images[ii].typeStart;
-				int tcount = (int) images[ii].typeCount;
-				if (start < 0 || tcount <= 0) {
-					continue;
-				}
-				for (int k = 0; k < tcount && (size_t) (start + k) < type_count; k++) {
-					type2img[start + k] = (int) ii;
-				}
-			}
-		}
-	}
+	int *type2img = build_type2img (images, image_count, type_count);
 
 	/* First pass: count P/Invoke methods. */
 	size_t n = 0;
@@ -690,11 +631,7 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t 
 			td = &types[m->declaringType];
 		}
 		it->name = build_qualified_name (meta, td, m->nameIndex);
-
-		int img_idx = -1;
-		if (type2img && m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
-			img_idx = type2img[m->declaringType];
-		}
+		int img_idx = image_index_for_method (type2img, type_count, m);
 		it->image_index = img_idx;
 		if (img_idx >= 0 && images && (size_t) img_idx < image_count) {
 			it->image_name = (char *) r2unity_get_string (meta, images[img_idx].nameIndex);
@@ -866,9 +803,7 @@ static uint8_t attribute_range_interop_kind (
 }
 
 R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta, size_t *count) {
-	if (!meta || !count) {
-		return NULL;
-	}
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
 	if (meta->version < 29) {
 		/* Pre-v29: attribute args live in native generator stubs; see doc/pinvoke.md §4.2. */
@@ -897,37 +832,16 @@ R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta,
 		return NULL;
 	}
 
-	/* typeIndex -> imageIndex map for naming and scoping. */
-	int *type2img = NULL;
-	if (images && type_count) {
-		type2img = R_NEWS (int, type_count);
-		if (type2img) {
-			for (size_t ti = 0; ti < type_count; ti++) {
-				type2img[ti] = -1;
-			}
-			for (size_t ii = 0; ii < image_count; ii++) {
-				int start = images[ii].typeStart;
-				int tcount = (int) images[ii].typeCount;
-				if (start < 0 || tcount <= 0) {
-					continue;
-				}
-				for (int k = 0; k < tcount && (size_t) (start + k) < type_count; k++) {
-					type2img[start + k] = (int) ii;
-				}
-			}
-		}
-	}
+	int *type2img = build_type2img (images, image_count, type_count);
 
-	/* Build per-image sorted (token, method_idx) index. Method tokens are
-	 * only unique within their owning image, so lookups must be scoped. */
-	typedef struct { uint32_t token; int32_t idx; } TokIdx;
-	int32_t *img_tok_start = NULL;  /* offset into tmap for each image */
+	/* Build per-image sorted (token, method_idx) index. */
+	int32_t *img_tok_start = NULL;
 	int32_t *img_tok_count = NULL;
-	TokIdx *tmap = NULL;
+	R2UTokIdx *tmap = NULL;
 	if (type2img && image_count) {
 		img_tok_start = R_NEWS0 (int32_t, image_count);
 		img_tok_count = R_NEWS0 (int32_t, image_count);
-		tmap = R_NEWS (TokIdx, method_count);
+		tmap = R_NEWS (R2UTokIdx, method_count);
 		if (!img_tok_start || !img_tok_count || !tmap) {
 			/* Partial allocation: drop all three so the lookup loop's
 			 * `if (tmap)` guard correctly skips the index. */
@@ -935,50 +849,31 @@ R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta,
 			R_FREE (img_tok_count);
 			R_FREE (tmap);
 		} else {
-			/* Count methods per image. */
 			for (size_t j = 0; j < method_count; j++) {
-				int32_t decl = methods[j].declaringType;
-				if (decl < 0 || (size_t) decl >= type_count) {
+				int img_idx = image_index_for_method (type2img, type_count, &methods[j]);
+				if (img_idx < 0 || (size_t) img_idx >= image_count || !methods[j].token) {
 					continue;
 				}
-				int img_idx = type2img[decl];
-				if (img_idx < 0 || (size_t) img_idx >= image_count) {
-					continue;
-				}
-				if (methods[j].token) {
-					img_tok_count[img_idx]++;
-				}
+				img_tok_count[img_idx]++;
 			}
-			/* Assign start offsets. */
 			int32_t acc = 0;
 			for (size_t ii = 0; ii < image_count; ii++) {
 				img_tok_start[ii] = acc;
 				acc += img_tok_count[ii];
-				img_tok_count[ii] = 0;  /* reset for use as append cursor */
+				img_tok_count[ii] = 0;  /* reused as append cursor */
 			}
-			/* Fill. */
 			for (size_t j = 0; j < method_count; j++) {
-				int32_t decl = methods[j].declaringType;
-				if (decl < 0 || (size_t) decl >= type_count) {
-					continue;
-				}
-				int img_idx = type2img[decl];
-				if (img_idx < 0 || (size_t) img_idx >= image_count) {
-					continue;
-				}
-				if (!methods[j].token) {
+				int img_idx = image_index_for_method (type2img, type_count, &methods[j]);
+				if (img_idx < 0 || (size_t) img_idx >= image_count || !methods[j].token) {
 					continue;
 				}
 				int32_t pos = img_tok_start[img_idx] + img_tok_count[img_idx]++;
 				tmap[pos].token = methods[j].token;
 				tmap[pos].idx = (int32_t) j;
 			}
-			(void) acc;
-			/* Sort each image's slice by token. */
-			extern int r2u_cmp_tokidx (const void *a, const void *b);
 			for (size_t ii = 0; ii < image_count; ii++) {
 				qsort (tmap + img_tok_start[ii], (size_t) img_tok_count[ii],
-					sizeof (TokIdx), r2u_cmp_tokidx);
+					sizeof (R2UTokIdx), cmp_tokidx);
 			}
 		}
 	}
@@ -1079,17 +974,6 @@ done:
 	R_FREE (tmap);
 	*count = n;
 	return out;
-}
-
-/* qsort comparator used by r2unity_enumerate_reverse_pinvokes; kept at file
- * scope because nested functions are not portable in ISO C. */
-int r2u_cmp_tokidx (const void *a, const void *b) {
-	typedef struct { uint32_t token; int32_t idx; } TokIdx;
-	const TokIdx *x = a;
-	const TokIdx *y = b;
-	if (x->token < y->token) return -1;
-	if (x->token > y->token) return 1;
-	return 0;
 }
 
 R_API void r2unity_free_interop (R2UnityInterop *items, size_t count) {

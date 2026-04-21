@@ -89,8 +89,61 @@ static inline const ut8 *elf_vm_to_ptr (ElfImg *e, ut64 vaddr) {
 	return NULL;
 }
 
+/* Walk a candidate method pointer table at VA `arrptr`. Entries below text_lo
+ * are retried with base_vaddr added (RVA→VA fallback). On match, copy up to
+ * method_count entries into candidates and return true. */
+static bool elf_probe_table (ElfImg *e, ut64 arrptr, ut32 count, int ptrsz,
+		ut64 base_vaddr, ut64 text_lo, ut64 text_hi,
+		ut32 min_seen, ut32 min_good,
+		size_t method_count, ut64 *candidates) {
+	ut32 sample = R_MIN ((ut32) 128, count);
+	ut32 good = 0, seen = 0;
+	for (ut32 k = 0; k < sample; k++) {
+		const ut8 *pp = elf_vm_to_ptr (e, arrptr + (ut64) k * (ut64) ptrsz);
+		if (!pp && base_vaddr != UT64_MAX) {
+			pp = elf_vm_to_ptr (e, base_vaddr + arrptr + (ut64) k * (ut64) ptrsz);
+		}
+		if (!pp) {
+			return false;
+		}
+		ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
+		if (val) {
+			seen++;
+		}
+		if ((val >= text_lo && val < text_hi)
+			|| (val && base_vaddr != UT64_MAX
+				&& (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) {
+			good++;
+		}
+	}
+	if (seen < min_seen || good < min_good) {
+		return false;
+	}
+	memset (candidates, 0, method_count * sizeof (ut64));
+	size_t tocopy = R_MIN ((size_t) count, method_count);
+	size_t in_text = 0;
+	for (size_t m = 0; m < tocopy; m++) {
+		const ut8 *pp = elf_vm_to_ptr (e, arrptr + (ut64) m * (ut64) ptrsz);
+		if (!pp && base_vaddr != UT64_MAX) {
+			pp = elf_vm_to_ptr (e, base_vaddr + arrptr + (ut64) m * (ut64) ptrsz);
+		}
+		if (!pp) {
+			break;
+		}
+		ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
+		ut64 abs = (val >= text_lo && val < text_hi)
+			? val
+			: ((val && base_vaddr != UT64_MAX) ? val + base_vaddr : val);
+		if (abs >= text_lo && abs < text_hi) {
+			candidates[m] = abs;
+			in_text++;
+		}
+	}
+	return in_text >= 8;
+}
+
 R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs) {
-	if (!meta || !elf_path || !out_ptrs) return false;
+	R_RETURN_VAL_IF_FAIL (meta && elf_path && out_ptrs, false);
 	*out_ptrs = NULL;
 	ElfImg e;
 	if (!elf_load (elf_path, &e)) return false;
@@ -183,86 +236,54 @@ R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *
 	/* expected number of entries in a possible method pointer array
 	 * use method_count computed earlier (methodsSize / sizeof(Il2CppMethodDefinition))
 	 */
-    ut32 expected = (ut32) R_MAX ((ut64)64, (ut64) ((ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition)));
-    // Try to locate CodeRegistration-like layout first: [count, ptr] for multiple arrays
-    for (int i = 0; i < e.nsegs && !found; i++) {
-        const ElfSeg *s = &e.segs[i];
-        bool is_data = (s->flags & 0x1) && !(s->flags & 0x4);
-        if (!is_data || s->filesz < (ut64)(16 + (ut64)ptrsz * 2)) continue;
-        const ut8 *buf = e.file + s->offset;
-        ut64 sz = s->filesz;
-        for (ut64 off = 0; off + (ut64)(8 + ptrsz) * 3 <= sz; off += 4) {
-            ut32 cnt1 = r_read_le32 (buf + off + 0);
-            ut64 p1 = (ptrsz == 8)? r_read_le64 (buf + off + 8): (ut64) r_read_le32 (buf + off + 4);
-            ut32 cnt2 = r_read_le32 (buf + off + (ut64)(8 + ptrsz));
-            if (cnt1 < 32 || cnt2 < 16) continue;
-            // Sample method array
-            ut32 good = 0, seen = 0;
-            ut32 sample = R_MIN ((ut32)128, cnt1);
-            for (ut32 k = 0; k < sample; k++) {
-                const ut8 *pp = elf_vm_to_ptr (&e, p1 + (ut64)k * (ut64)ptrsz);
-                if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + p1 + (ut64)k * (ut64)ptrsz); }
-                if (!pp) break;
-                ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
-                if (val) seen++;
-                if ((val >= text_lo && val < text_hi) || (val && base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
-            }
-            if (seen >= 8 && good >= 8) {
-                if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/elf] codeReg p1=0x%"PFMT64x" cnt1=%u\n", p1, cnt1);
-                memset (candidates, 0, method_count * sizeof (ut64));
-                size_t tocopy = R_MIN ((size_t) cnt1, method_count);
-                size_t in_text = 0;
-                for (size_t m = 0; m < tocopy; m++) {
-                    const ut8 *pp = elf_vm_to_ptr (&e, p1 + (ut64)m * (ut64)ptrsz);
-                    if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + p1 + (ut64)m * (ut64)ptrsz); }
-                    if (!pp) break;
-                    ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
-                    ut64 abs = (val >= text_lo && val < text_hi)? val: ((val && base_vaddr != UT64_MAX)? val + base_vaddr: val);
-                    if (abs >= text_lo && abs < text_hi) { candidates[m] = abs; in_text++; }
-                }
-                if (in_text >= 8) { found = true; }
-                break;
-            }
-        }
-    }
-	for (int i = 0; i < e.nsegs && !found; i++) {
-		const ElfSeg *s = &e.segs[i];
-		bool is_data = (s->flags & 0x1) && !(s->flags & 0x4);
-		if (!is_data || s->filesz < (ut64)(8 + ptrsz)) continue;
-		const ut8 *buf = e.file + s->offset;
-		ut64 sz = s->filesz;
-            for (ut64 off = 0; off + (ut64)(8 + ptrsz) <= sz; off += 4) {
-                ut32 cnt32 = r_read_le32 (buf + off);
-                if (cnt32 == 0) continue;
-                /* stricter thresholds to avoid wrong tables */
-                if (cnt32 < 64) continue;
-                if (expected && (cnt32 > expected * 2 || cnt32 < expected / 2)) continue;
-                ut64 arrptr = (ptrsz == 8) ? r_read_le64 (buf + off + 8) : (ut64) r_read_le32 (buf + off + 4);
-                ut32 good = 0, seen = 0;
-                ut32 sample = R_MIN ((ut32)128, cnt32);
-                for (ut32 k = 0; k < sample; k++) {
-                    const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)k * (ut64)ptrsz);
-                    if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)k * (ut64)ptrsz); }
-                    if (!pp) break;
-                    ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
-                    if (val) seen++;
-                    if ((val >= text_lo && val < text_hi) || (val && base_vaddr != UT64_MAX && (val + base_vaddr) >= text_lo && (val + base_vaddr) < text_hi)) good++;
-                }
-                if (seen >= sample / 2 && good >= (sample * 3) / 4) {
-                    if (r2unity_is_debug ()) fprintf (stderr, "[r2unity/elf] arrptr=0x%"PFMT64x" cnt=%u good=%u seen=%u\n", arrptr, cnt32, good, seen);
-                    memset (candidates, 0, method_count * sizeof (ut64));
-                    size_t tocopy = R_MIN ((size_t) cnt32, method_count);
-				size_t in_text = 0;
-				for (size_t m = 0; m < tocopy; m++) {
-					const ut8 *pp = elf_vm_to_ptr (&e, arrptr + (ut64)m * (ut64)ptrsz);
-					if (!pp && base_vaddr != UT64_MAX) { pp = elf_vm_to_ptr (&e, base_vaddr + arrptr + (ut64)m * (ut64)ptrsz); }
-					if (!pp) break;
-					ut64 val = (ptrsz == 8) ? r_read_le64 (pp) : (ut64) r_read_le32 (pp);
-					ut64 abs = (val >= text_lo && val < text_hi)? val: ((val && base_vaddr != UT64_MAX)? val + base_vaddr: val);
-					if (abs >= text_lo && abs < text_hi) { candidates[m] = abs; in_text++; }
+	ut32 expected = (ut32) R_MAX ((ut64) 64, (ut64) method_count);
+	/* Pass 0: CodeRegistration-shape (pair of count/ptr tuples), loose floor.
+	 * Pass 1: generic {count32, ptr} with expected-count bounds and stricter
+	 * sample-fraction thresholds. */
+	for (int pass = 0; pass < 2 && !found; pass++) {
+		const ut32 min_count = (pass == 0) ? 32 : 64;
+		const ut64 min_secsize = (pass == 0)
+			? (ut64) (16 + (ut64) ptrsz * 2)
+			: (ut64) (8 + ptrsz);
+		const ut64 min_step = (pass == 0)
+			? (ut64) (8 + ptrsz) * 3
+			: (ut64) (8 + ptrsz);
+		for (int i = 0; i < e.nsegs && !found; i++) {
+			const ElfSeg *s = &e.segs[i];
+			bool is_data = (s->flags & 0x1) && !(s->flags & 0x4);
+			if (!is_data || s->filesz < min_secsize) {
+				continue;
+			}
+			const ut8 *buf = e.file + s->offset;
+			for (ut64 off = 0; off + min_step <= s->filesz; off += 4) {
+				ut32 cnt = r_read_le32 (buf + off);
+				if (cnt < min_count) {
+					continue;
 				}
-				if (in_text >= 8) { found = true; }
-				break;
+				if (pass == 0) {
+					/* Require a second plausible count immediately after the ptr. */
+					ut32 cnt2 = r_read_le32 (buf + off + (ut64) (8 + ptrsz));
+					if (cnt2 < 16) {
+						continue;
+					}
+				} else if (expected && (cnt > expected * 2 || cnt < expected / 2)) {
+					continue;
+				}
+				ut64 arrptr = (ptrsz == 8)
+					? r_read_le64 (buf + off + 8)
+					: (ut64) r_read_le32 (buf + off + 4);
+				ut32 sample = R_MIN ((ut32) 128, cnt);
+				ut32 min_seen = (pass == 0) ? 8 : sample / 2;
+				ut32 min_good = (pass == 0) ? 8 : (sample * 3) / 4;
+				if (elf_probe_table (&e, arrptr, cnt, ptrsz, base_vaddr, text_lo, text_hi,
+						min_seen, min_good, method_count, candidates)) {
+					if (r2unity_is_debug ()) {
+						fprintf (stderr, "[r2unity/elf] pass=%d arrptr=0x%"PFMT64x" cnt=%u\n",
+							pass, arrptr, cnt);
+					}
+					found = true;
+					break;
+				}
 			}
 		}
 	}
