@@ -928,7 +928,13 @@ R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta,
 		img_tok_start = R_NEWS0 (int32_t, image_count);
 		img_tok_count = R_NEWS0 (int32_t, image_count);
 		tmap = R_NEWS (TokIdx, method_count);
-		if (img_tok_start && img_tok_count && tmap) {
+		if (!img_tok_start || !img_tok_count || !tmap) {
+			/* Partial allocation: drop all three so the lookup loop's
+			 * `if (tmap)` guard correctly skips the index. */
+			R_FREE (img_tok_start);
+			R_FREE (img_tok_count);
+			R_FREE (tmap);
+		} else {
 			/* Count methods per image. */
 			for (size_t j = 0; j < method_count; j++) {
 				int32_t decl = methods[j].declaringType;
@@ -1068,6 +1074,8 @@ done:
 	R_FREE (types);
 	R_FREE (images);
 	R_FREE (type2img);
+	R_FREE (img_tok_start);
+	R_FREE (img_tok_count);
 	R_FREE (tmap);
 	*count = n;
 	return out;
