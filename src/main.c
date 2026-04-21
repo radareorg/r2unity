@@ -8,18 +8,20 @@
 
 static void build_method_attrs_string (char *o, size_t osz, unsigned int flags) {
 	/* System.Reflection.MethodAttributes subset */
-	const unsigned int MemberAccessMask = 0x0007;
-	const unsigned int MdPrivate = 0x0001;
-	const unsigned int MdFamANDAssem = 0x0002; /* private protected */
-	const unsigned int MdAssembly = 0x0003;    /* internal */
-	const unsigned int MdFamily = 0x0004;      /* protected */
-	const unsigned int MdFamORAssem = 0x0005;  /* protected internal */
-	const unsigned int MdPublic = 0x0006;
-	const unsigned int MdStatic = 0x0010;
-	const unsigned int MdFinal = 0x0020;
-	const unsigned int MdVirtual = 0x0040;
-	const unsigned int MdAbstract = 0x0400;
-	const unsigned int MdPinvokeImpl = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL;
+	enum {
+		MemberAccessMask = 0x0007,
+		MdPrivate        = 0x0001,
+		MdFamANDAssem    = 0x0002, /* private protected */
+		MdAssembly       = 0x0003, /* internal */
+		MdFamily         = 0x0004, /* protected */
+		MdFamORAssem     = 0x0005, /* protected internal */
+		MdPublic         = 0x0006,
+		MdStatic         = 0x0010,
+		MdFinal          = 0x0020,
+		MdVirtual        = 0x0040,
+		MdAbstract       = 0x0400,
+		MdPinvokeImpl    = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
+	};
 	const char *vis = "";
 	switch (flags & MemberAccessMask) {
 	case MdPublic: vis = "public"; break;
