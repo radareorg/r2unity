@@ -19,7 +19,7 @@ all: $(EXEC)
 
 # Linking the executable
 $(EXEC): $(OBJS)
-	$(CC) $(LDFLAGS) -o $@ $^
+	$(CC) -o $@ $^ $(LDFLAGS)
 
 # Compiling source files into object files
 %.o: %.c
