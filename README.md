@@ -1,5 +1,7 @@
 # r2unity
 
+<img src="r2unity.png" alt="logo" width="150px" height="150px" align="left">
+
 `r2unity` is a small C tool that reads Unity IL2CPP `global-metadata.dat` files and emits useful output for the matching native binary. Today it ships as a CLI linked against `r_util`; the radare2 core plugin is still planned and is not part of the current build.
 
 ## Current Features
