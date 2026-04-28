@@ -33,6 +33,8 @@ CLI_SRCS = src/main.c
 CLI_OBJS = $(CLI_SRCS:.c=.o)
 OBJS = $(CLI_OBJS) $(LIB_OBJS)
 
+R2PM_BINDIR=$(shell r2pm -H r2PM_BINDIR)
+
 # Default target
 all: $(EXEC)
 
@@ -48,6 +50,13 @@ install-plugin: $(PLUGIN)
 uninstall-plugin:
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	rm -f "$(R2_USER_PLUGINS)/core_r2unity.$(SOEXT)"
+
+user-install: install-plugin
+	mkdir -p "$(R2PM_BINDIR)"
+	cp -f $(EXEC) "$(R2PM_BINDIR)"
+
+user-uninstall: uninstall-plugin
+	rm -f "$(R2PM_BINDIR)/$(EXEC)"
 
 # check target wraps r2r with a timeout wrapper
 

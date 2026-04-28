@@ -2,168 +2,131 @@
 
 <img src="r2unity.png" alt="logo" width="150px" height="150px" align="left">
 
-`r2unity` is a small C tool that reads Unity IL2CPP `global-metadata.dat` files and emits useful output for the matching native binary. Today it ships as a CLI linked against `r_util`; the radare2 core plugin is still planned and is not part of the current build.
+`r2unity` is a commandline tool and radare2 plugin for inspecting Unity apps.
 
-## Current Features
+Unity apps are written in **C#**, compiled into **MSIL** and then transpiled into **C++** with the il2cpp program.
 
-- Parses Unity IL2CPP metadata with wire versions `24` through `31`.
-- Decodes metadata strings, managed string literals, type definitions, method definitions, image definitions, assembly definitions, and referenced-assembly edges.
-- Generates radare2 script output for recovered method addresses.
-- Scans native method-pointer tables heuristically in:
-  - ELF (`libil2cpp.so`, `GameAssembly.so`)
-  - Mach-O (`UnityFramework`, `GameAssembly.dylib`)
-  - PE (`GameAssembly.dll`)
-- Handles ELF relative relocations before scanning (`REL`, `RELA`, `RELR`).
-- Emits one-line JSON status with `-j`.
-- Emits a managed-assembly CycloneDX 1.5 SBOM with `-S`.
-- Enumerates P/Invoke methods with `-P`.
-- Enumerates reverse-P/Invoke methods with `-R` on v29+ metadata.
-- Enumerates managed `ldstr` string literals with `-z`.
-- Supports quiet mode, output limiting, and verbose debug tracing.
+The resulting binary is an AOT executable that picks from the `global-metadata.dat` file all the strings, symbols, classes, structs and many other ecma335 metadata from DotNet.
 
-## What It Does Not Do Yet
+With this plugin we load all that information and expose it as plaintext, json or inside radare2, ready for proper analysis.
 
-- No radare2 core plugin is built yet.
-- No automatic `global-metadata.dat` discovery exists in the CLI.
-- `-a` / `-c` are exposed in the CLI but the manual pointer-table reader is still a stub.
-- P/Invoke output does not yet recover `DllImport` DLL names or entry-point names, so those fields stay unresolved.
-- Reverse-P/Invoke output identifies annotated methods, but does not yet recover wrapper addresses from `CodeRegistration`.
-- SBOM output is metadata-only: no native-library inventory, hashes, UUIDs, or build IDs yet.
-- Field, property, event, and parameter decoding are not exposed by the current CLI.
+For idiomatic decompilation it is recommended to use **decai** with `-e decai.lang=csharp`.
 
-## Required Inputs
+--pancake
 
-You normally give `r2unity` two files:
+## Features
 
-1. The native IL2CPP binary:
-   - Android: `libil2cpp.so`
-   - iOS: `UnityFramework`
-   - macOS: `GameAssembly.dylib`
-   - Windows: `GameAssembly.dll`
-   - Linux: `GameAssembly.so`
-2. The matching `global-metadata.dat`
+* Support from il2cpp from v24 to v31
+* Support 32 and 64bit ELF, FatMACHO, MACHO and PE
+* Heuristic method-pointer scanner
+* Works on Windows, Linux, macOS, iOS and Android
+* Mainly validated on arm64, but should support Intel too
+* Parse headers, strings, literals, method names, types, images, assemblies
+* Decodes managed `ldstr` string literals from the payload table region
+* Find il2cpp companion files relative to the main app executable (`-D`)
+* Interop (managed <=> native) listings (PInvoke and reverse-PInvoke calls)
+* Support SBOM listings, emit CycloneDX 1.5 JSON with the assemblies (`-S`)
 
-For `-z`, metadata alone is enough:
+radare2 plugin support:
 
-```sh
-./r2unity -z path/to/global-metadata.dat
-```
+- `make plugin` builds `src/r2/core_r2unity.$(so|dylib)`.
+- `make install-plugin` copies the plugin into the user radare2 plugin
+  directory.
+- The plugin adds `r2unity.*` eval variables and can auto-detect metadata
+  and IL2CPP library paths from the currently loaded binary.
+- Method-symbol mode can apply flags/comments directly to the r2 session,
+  print r2 commands, or return JSON.
 
 ## Build
 
+The commandline tool and the r2 plugin require **pkg-config** and **radare2** libraries to work:
+
 ```sh
 make
+make plugin
+make user-install  # install user-plugin and cli in the r2pm path
 ```
 
-Requirements:
+Most users may just run `r2pm -ci r2unity` to get the repo cloned, built and installed.
 
-- C compiler
-- `pkg-config`
-- radare2 development headers for `r_util`
+After installing the plugin, open a Unity binary in r2 and use:
 
-The current `Makefile` builds only the CLI and links only against `r_util`.
+```text
+r2unity?       show help
+```
 
-## Usage
+And you may also have it available via `r2pm -r r2unity` unless you setup the *PATH* environ.
+
+
+## CLI Usage
 
 ```text
 Usage: ./r2unity [options] <executable> <global-metadata.dat>
 
 Options:
+  -a 0xADDR     Read the method pointer table starting at virtual address 0xADDR
+  -c N          Read N pointer entries (pair with -a)
+  -D            Detect companion files from the given executable path and exit
+  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers
+  -h            Show help and exit
   -j            One-line JSON status, or JSON output with -P
-  -r            Emit r2-script-style text for -P / -R
-  -q            Quiet mode
   -l N          Limit emitted entries to N
-  -f            Auto-detect ELF/Mach-O/PE and scan method pointers
-  -a 0xADDR     Manual method-pointer table address (currently stubbed)
-  -c N          Pointer count for -a
-  -S            Emit CycloneDX 1.5 JSON for managed assemblies
-  -P            Enumerate P/Invoke methods
-  -R            Enumerate reverse-P/Invoke methods (v29+)
-  -z            Enumerate managed string literals
+  -P            Enumerate P/Invoke (managed -> native) methods
+  -q            Quiet mode: omit banner and informational comments
+  -r            Emit r2 script commands (flags + comments); pairs with -P/-R
+  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)
+  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies
   -v            Verbose debug tracing on stderr
-  -h            Show help
+  -z            Enumerate managed string literals (`ldstr`) from metadata
 ```
 
-## Typical Workflows
+Normal symbol recovery needs two inputs but the `-D` will automatically resolve it for you.
 
-Generate an r2 script from an iOS or Android sample:
+1. The native IL2CPP binary:
+   - iOS: `UnityFramework`
+   - Android: `libil2cpp.so`
+   - macOS: `GameAssembly.dylib`
+   - Windows: `GameAssembly.dll`
+   - Linux: `GameAssembly.so`
+2. The matching `global-metadata.dat`
 
-```sh
-./r2unity -f path/to/UnityFramework path/to/global-metadata.dat > unity.r2
-r2 -i unity.r2 path/to/UnityFramework
+## radare2 Plugin
+
+After installing the plugin, open a Unity binary in r2 and use:
+
+```console
+r2unity-i      metadata summary
+r2unity-ij     metadata summary as JSON
+r2unity-s      apply managed method flags/comments to the current r2 session
 ```
 
-Get a stable JSON smoke result:
+The commands suffixed with `*` will print r2 commands, so you can run them by prefixing it with a dot `.`:
 
-```sh
-./r2unity -j -f path/to/libil2cpp.so path/to/global-metadata.dat
+```text
+.r2unity-R*
 ```
 
-Dump managed assemblies as a CycloneDX document:
+Plugin configuration variables:
 
-```sh
-./r2unity -S path/to/UnityFramework path/to/global-metadata.dat
+```text
+r2unity.metadata    path to global-metadata.dat
+r2unity.library     path to IL2CPP native library
 ```
 
-List P/Invoke methods:
+If either variable is empty, the plugin tries to detect it from the loaded binary path using the `-D` approach.
 
-```sh
-./r2unity -P -q path/to/UnityFramework path/to/global-metadata.dat
-```
-
-List reverse-P/Invoke methods:
-
-```sh
-./r2unity -R -q path/to/UnityFramework path/to/global-metadata.dat
-```
-
-Dump managed string literals:
-
-```sh
-./r2unity -z -q path/to/global-metadata.dat
-```
-
-## Output Modes
-
-Default mode prints radare2 commands when method addresses are recovered. With `-f`, the scanner tries to find the method-pointer table automatically. Without pointers, the CLI can still walk metadata, but it cannot emit useful addresses.
-
-`-j` behaves differently by mode:
-
-- Plain CLI: one-line summary with `ok`, metadata `version`, `types`, `methods`, and `has_ptrs`
-- `-P`: JSON array of P/Invoke methods
-- `-R`: JSON array of reverse-P/Invoke methods
-
-`-r` is currently only meaningful with `-P` and `-R`; it emits r2-script-style comment lines describing the interop symbols, but not resolved wrapper addresses.
-
-## Platform Notes
-
-- ELF support covers little-endian 32-bit and 64-bit files.
-- Mach-O support covers 64-bit thin files and FAT files; FAT handling currently picks the first ARM64 slice, otherwise the first slice.
-- PE support covers 32-bit and 64-bit Windows-style images.
 
 ## Known Limitations
 
-- Reverse-P/Invoke detection is metadata-driven on v29+ by looking for `MonoPInvokeCallbackAttribute` and `UnmanagedCallersOnlyAttribute`. It does not yet recover wrapper VAs.
-- The SBOM path currently uses metadata tables only. The executable path is used for naming the top-level component, not for native dependency extraction.
-- Wire version support is broad, but not every older sub-version has a fully dedicated stride table yet.
-
-## checks
-
-```sh
-```
-
-The check suite currently covers:
-
-- JSON summary mode
-- P/Invoke enumeration
-- Reverse-P/Invoke enumeration
-- Managed string-literal extraction
-
-
-## Related Docs
-
-- `doc/r2unity.md` - current implementation notes
-- `doc/strings.md` - managed string-literal mode
-- `doc/sbom.md` - current SBOM behavior and limits
-- `doc/pinvoke.md` - current interop enumeration behavior
-- `doc/future.md` - remaining roadmap items
+- `-a` / `-c` are wired into the CLI, but `r2unity_read_method_pointers_at()` is still a stub.
+- Method-pointer discovery is heuristic and can lock onto a wrong count-prefixed table on unfamiliar binaries.
+- No full `Il2CppCodeRegistration` or `Il2CppMetadataRegistration` structural recovery exists yet.
+- P/Invoke currently identifies managed extern methods, but does not decode `DllImportAttribute` DLL names, entry-point names, charset, calling convention, or `SetLastError`.
+- Reverse-P/Invoke currently identifies annotated v29+ managed methods, but does not recover native wrapper VAs from `reversePInvokeWrappers`.
+- Pre-v29 reverse-P/Invoke attribute argument recovery is not implemented; those values live in native custom-attribute generator thunks.
+- Interop wrapper recovery from `Il2CppInteropData` is not implemented.
+- SBOM output is managed-metadata-only. It does not enumerate native dependencies, imports, build IDs, UUIDs, PDB GUIDs, code signatures, toolchain data, or file hashes.
+- Field, parameter, property, event, generic, interface, vtable, RGCTX, default-value, marshaling, and field-offset tables are declared in the header but not exposed by the CLI/plugin yet.
+- Type signatures and parameter names are not printed yet, so methods are named with an argument count rather than a full C# signature.
+- WebAssembly is unsupported.
+- The plugin and CLI SBOM paths are similar but not identical; the CLI currently emits more assembly properties.
