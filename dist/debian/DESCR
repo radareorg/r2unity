@@ -1,0 +1,2 @@
+Unity IL2CPP metadata tool and radare2 plugin
+r2unity inspects Unity IL2CPP binaries and global-metadata.dat files, exposing recovered metadata as CLI output or radare2 flags and comments through its core plugin.

@@ -5,6 +5,14 @@
 *.o
 /r2unity
 
+# Debian packaging artifacts
+/dist/debian/*.deb
+/dist/debian/build/
+/dist/debian/control/
+/dist/debian/data/
+/dist/debian/debian-binary
+/dist/debian/root/
+
 # Third-party reference checkouts (radare2, il2cpp dumper, etc.)
 /third_party/
 
