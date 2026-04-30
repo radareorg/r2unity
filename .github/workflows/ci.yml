@@ -2,11 +2,9 @@ name: CI
 
 on:
   push:
-    branches: ['**']
+    branches:
+      - '**'
   pull_request:
-
-env:
-  R2V: 6.1.4
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -14,18 +12,25 @@ concurrency:
 
 jobs:
   build:
+    name: Build (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: radareorg/github-actions@v1
-        with:
-          version: ${{ env.R2V }}
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install radare2
+        id: r2
+        uses: radareorg/github-actions@v1
+
       - name: Build
         run: make
+
+      - name: Build plugin
+        run: make plugin
 
   debian:
     name: Build Debian package
@@ -33,26 +38,22 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
 
       - name: Install build deps
-        run: sudo apt-get update -y && sudo apt-get install -y build-essential pkg-config wget
+        run: sudo apt-get update -y && sudo apt-get install -y build-essential pkg-config
 
-      - name: Download Radare2 Debian packages
-        run: |
-          wget -O r2.deb     https://github.com/radareorg/radare2/releases/download/${{ env.R2V }}/radare2_${{ env.R2V }}_amd64.deb
-          wget -O r2-dev.deb https://github.com/radareorg/radare2/releases/download/${{ env.R2V }}/radare2-dev_${{ env.R2V }}_amd64.deb
-
-      - name: Install Radare2
-        run: sudo dpkg -i r2.deb r2-dev.deb
+      - name: Install radare2
+        id: r2
+        uses: radareorg/github-actions@v1
 
       - name: Build Debian package
         run: make -C dist/debian SUDO=
 
       - name: Upload Debian package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: debian-package
           path: dist/debian/*.deb
