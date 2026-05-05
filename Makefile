@@ -1,6 +1,3 @@
-# Simple Makefile for the r2unity project
-
-# Compiler and flags
 CC = gcc
 CFLAGS = -Wall -Wextra -g $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
 LDFLAGS = $(shell pkg-config --libs r_util 2>/dev/null || echo "")
@@ -33,7 +30,7 @@ CLI_SRCS = src/main.c
 CLI_OBJS = $(CLI_SRCS:.c=.o)
 OBJS = $(CLI_OBJS) $(LIB_OBJS)
 
-R2PM_BINDIR=$(shell r2pm -H r2PM_BINDIR)
+R2PM_BINDIR=$(shell r2pm -H R2PM_BINDIR)
 
 # Default target
 all: $(EXEC)
@@ -59,6 +56,7 @@ user-uninstall: uninstall-plugin
 	rm -f "$(R2PM_BINDIR)/$(EXEC)"
 
 # check target wraps r2r with a timeout wrapper
+
 
 # Linking the executable
 $(EXEC): $(OBJS)

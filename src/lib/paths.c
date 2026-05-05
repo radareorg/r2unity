@@ -134,9 +134,25 @@ static bool try_macos (R2UnityPaths *p, const char *abs, const char *dir, const 
 	return true;
 }
 
+static char *find_ios_metadata (const char *app_dir) {
+	static const char *const metas[] = {
+		"Data/Managed/Metadata/global-metadata.dat",
+		"Data/Raw/Managed/Metadata/global-metadata.dat",
+		NULL
+	};
+	char *metadata = NULL;
+	for (int i = 0; metas[i]; i++) {
+		if (take_if_exists (&metadata, pjoin (app_dir, metas[i]))) {
+			return metadata;
+		}
+	}
+	return NULL;
+}
+
 static bool try_ios (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Framework layout: Game.app/Frameworks/UnityFramework.framework/UnityFramework
 	 * Flat iOS layout:  Game.app/UnityFramework (older builds)
+	 * Extracted app root: Game/Data plus the main Mach-O beside Data
 	 * Metadata:         Game.app/Data/Managed/Metadata/global-metadata.dat
 	 *                   Game.app/Data/Raw/Managed/Metadata/global-metadata.dat (newer) */
 	char *app_dir = NULL;
@@ -147,19 +163,9 @@ static bool try_ios (R2UnityPaths *p, const char *abs, const char *dir, const ch
 	} else if (r_str_endswith (dir, ".app")) {
 		app_dir = strdup (dir);
 	} else {
-		return false;
+		app_dir = strdup (dir);
 	}
-	static const char *const metas[] = {
-		"Data/Managed/Metadata/global-metadata.dat",
-		"Data/Raw/Managed/Metadata/global-metadata.dat",
-		NULL
-	};
-	char *metadata = NULL;
-	for (int i = 0; metas[i]; i++) {
-		if (take_if_exists (&metadata, pjoin (app_dir, metas[i]))) {
-			break;
-		}
-	}
+	char *metadata = find_ios_metadata (app_dir);
 	if (!metadata) {
 		free (app_dir);
 		return false;
@@ -171,7 +177,9 @@ static bool try_ios (R2UnityPaths *p, const char *abs, const char *dir, const ch
 		p->il2cpp_binary = strdup (abs);
 	} else if (!take_if_exists (&p->il2cpp_binary,
 			r_file_new (app_dir, "Frameworks", "UnityFramework.framework", "UnityFramework", NULL))) {
-		take_if_exists (&p->il2cpp_binary, pjoin (app_dir, "UnityFramework"));
+		if (!take_if_exists (&p->il2cpp_binary, pjoin (app_dir, "UnityFramework"))) {
+			p->il2cpp_binary = strdup (abs);
+		}
 	}
 	free (app_dir);
 	return true;
@@ -394,7 +402,7 @@ static char *expand_dir_input (const char *dir) {
 	return out;
 }
 
-R_API R2UnityPaths *r2unity_detect_paths (const char *input) {
+R_API R2UnityPaths *r2unity_detect_paths(const char *input) {
 	R_RETURN_VAL_IF_FAIL (input, NULL);
 	if (!*input) {
 		return NULL;
