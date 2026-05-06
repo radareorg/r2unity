@@ -4,6 +4,13 @@
 #include <r_util.h>
 
 #define IL2CPP_MAGIC 0xFAB11BAF
+#define R2UNITY_METADATA_SECTION_COUNT 31
+
+typedef struct {
+	uint32_t offset;
+	uint32_t size;
+	uint32_t count;
+} Il2CppMetadataSection;
 
 typedef struct {
 	uint32_t sanity;
@@ -212,10 +219,47 @@ typedef struct {
 	int32_t rgctxEntriesDataSize;
 } Il2CppGlobalMetadataHeader_v29;
 
+typedef struct {
+	uint32_t sanity;
+	int32_t version;
+	Il2CppMetadataSection stringLiterals;
+	Il2CppMetadataSection stringLiteralData;
+	Il2CppMetadataSection strings;
+	Il2CppMetadataSection events;
+	Il2CppMetadataSection properties;
+	Il2CppMetadataSection methods;
+	Il2CppMetadataSection parameterDefaultValues;
+	Il2CppMetadataSection fieldDefaultValues;
+	Il2CppMetadataSection fieldAndParameterDefaultValueData;
+	Il2CppMetadataSection fieldMarshaledSizes;
+	Il2CppMetadataSection parameters;
+	Il2CppMetadataSection fields;
+	Il2CppMetadataSection genericParameters;
+	Il2CppMetadataSection genericParameterConstraints;
+	Il2CppMetadataSection genericContainers;
+	Il2CppMetadataSection nestedTypes;
+	Il2CppMetadataSection interfaces;
+	Il2CppMetadataSection vtableMethods;
+	Il2CppMetadataSection interfaceOffsets;
+	Il2CppMetadataSection typeDefinitions;
+	Il2CppMetadataSection images;
+	Il2CppMetadataSection assemblies;
+	Il2CppMetadataSection fieldRefs;
+	Il2CppMetadataSection referencedAssemblies;
+	Il2CppMetadataSection attributeData;
+	Il2CppMetadataSection attributeDataRanges;
+	Il2CppMetadataSection unresolvedIndirectCallParameterTypes;
+	Il2CppMetadataSection unresolvedIndirectCallParameterRanges;
+	Il2CppMetadataSection windowsRuntimeTypeNames;
+	Il2CppMetadataSection windowsRuntimeStrings;
+	Il2CppMetadataSection exportedTypeDefinitions;
+} Il2CppGlobalMetadataHeader_v38;
+
 typedef union {
 	Il2CppGlobalMetadataHeader_v24 v24;
 	Il2CppGlobalMetadataHeader_v27 v27;
 	Il2CppGlobalMetadataHeader_v29 v29;
+	Il2CppGlobalMetadataHeader_v38 v38;
 } Il2CppGlobalMetadataHeader;
 
 typedef struct {
@@ -235,6 +279,11 @@ typedef struct {
 	int32_t methodsSize;
 	uint32_t typeDefinitionsOffset;
 	int32_t typeDefinitionsSize;
+	Il2CppMetadataSection sections[R2UNITY_METADATA_SECTION_COUNT];
+	int typeIndexSize;
+	int typeDefinitionIndexSize;
+	int genericContainerIndexSize;
+	int parameterIndexSize;
 } R2UnityMetadata;
 
 typedef struct {

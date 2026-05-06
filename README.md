@@ -16,7 +16,7 @@ For idiomatic decompilation it is recommended to use **decai** with `-e decai.la
 
 ## Features
 
-* Support from il2cpp from v24 to v31
+* Support from il2cpp from v24 to v31, plus Unity 6 metadata v39
 * Support 32 and 64bit ELF, FatMACHO, MACHO and PE
 * Heuristic method-pointer scanner
 * Works on Windows, Linux, macOS, iOS and Android

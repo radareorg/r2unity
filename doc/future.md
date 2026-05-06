@@ -25,29 +25,25 @@ authoritative reference implementations vendored or cited:
 
 ## 1. IL2CPP metadata wire versions
 
-### 1.1 Wire versions observed on disk
+### 1.1 Wire versions known on disk
 
-The `int32_t` at file offset `4` of `global-metadata.dat` has only
-ever taken these values:
+The `int32_t` at file offset `4` of `global-metadata.dat` is known
 
 ```text
-16, 19, 20, 21, 22, 23, 24, 27, 29, 31
+16, 19, 20, 21, 22, 23, 24, 27, 29, 31, 38, 39
 ```
 
-`17, 18, 25, 26, 28, 30` were reserved but never shipped. The
-Il2CppDumper dispatcher
-(`third_party/Il2CppDumper/Il2Cpp/Metadata.cs:55`) rejects anything
-outside `[16, 31]`:
-
-```csharp
-if (version < 16 || version > 31)
-    throw new NotSupportedException(...);
-```
+Earlier values between those releases were reserved or skipped.
+Current Il2CppDumper v39 sources define the new section-based header
+from v38 onward and have a v39-specific `ParameterIndex` encoding,
+so the old `[16,31]` high-water mark is no longer current.
 
 ### 1.2 Fractional sub-versions
 
 Within each wire version Il2CppDumper tracks fractional sub-versions
-(`24.1`, `24.2`, `24.3`, `24.4`, `24.5`, `27.1`, `27.2`, `29.1`).
+(`24.1`, `24.2`, `24.3`, `24.4`, `24.5`, `27.1`, `27.2`, `29.1`;
+newer Unity 6 metadata uses whole wire versions v38/v39 for the
+observed on-disk break).
 These are **not** written to disk. They are reverse-engineered
 signatures inferred by probing:
 
@@ -78,6 +74,21 @@ leak into the `.dat`:
 - Attribute tables (`attributesInfo` + `attributeTypes`) are
 	replaced by a BLOB layout (`attributeDataRange` + `attributeData`)
 	at **v29**. Same header slots, entirely new semantics.
+- The header switches from `{offset,size}` pairs to 31
+	`{offset,size,count}` section records at **v38**.
+- `Il2CppStringLiteral` drops its `length` field at **v38**. Rows
+	are `dataIndex` only; length is inferred from the next row or the
+	end of the string-literal data section.
+- `TypeIndex`, `TypeDefinitionIndex`, and `GenericContainerIndex`
+	are compact serialized custom index types on newer metadata. The
+	serialized width is 1, 2, or 4 bytes, selected from the referenced
+	table's row count.
+- `ParameterIndex` becomes compact at **v39**.
+- `Il2CppTypeDefinition.elementTypeIndex` is no longer serialized
+	on v32+ metadata.
+- `Il2CppAssemblyDefinition` gains `moduleToken` at **v38**, moving
+	the embedded `Il2CppAssemblyNameDefinition` tail from offset 16
+	to offset 20.
 
 ### 1.3 Unity release → wire-version mapping
 
@@ -102,23 +113,25 @@ is the fractional binary-side refinement.
 | 2021.2 – 2021.3          | 27           | 27.2        | RGCTX widens to 64 bits on disk; `Il2CppType` repacks `valuetype` bit. |
 | 2022.1                   | 29           | 29          | Inline custom-attribute BLOB; `customAttributeGenerators` removed.     |
 | 2022.2 – 2022.3          | 29           | 29.1        | `unresolvedVirtualCallPointers` splits into instance + static arrays.  |
-| 2023.1 – 2023.2          | 31           | 31          | `Il2CppMethodDefinition` adds `returnParameterToken`.                  |
-| 6000.x (Unity 6)         | 31           | 31          | Provisional — no on-disk change known.                                 |
+| 2023.1 – 2023.x          | 31           | 31          | `Il2CppMethodDefinition` adds `returnParameterToken`.                  |
+| 6000.x (Unity 6 era)     | 38           | 38          | Section header triples; string-literal rows become `dataIndex` only.   |
 
 Il2CppDumper's bundled README claims "Unity 5.3 – 2022.2", i.e.
 wire versions 21–29. Support for wire v31 (Unity 2023+) is present
 in current master via the `[Version(Min = 31)]` annotation on
-`returnParameterToken` in `MetadataClass.cs`.
+`returnParameterToken` in `MetadataClass.cs`; v39 sources add the
+section-triple header and compact-index annotations used above.
 
 ### 1.4 r2unity's current acceptance band
 
 From `r2unity_parse_metadata()` in `src/lib/lib.c`:
 
 ```c
-if (version < 24 || version > 31)  return NULL;
-if (version < 27)       header_size = sizeof (v24);
+if (version < 24 || version > 39 || (version > 35 && version < 38))  return NULL;
+if (version >= 38)      header_size = sizeof (v38);
+else if (version < 27)  header_size = sizeof (v24);
 else if (version < 29)  header_size = sizeof (v27);
-else                    header_size = sizeof (v29);   /* 29, 30, 31 */
+else                    header_size = sizeof (v29);   /* 29..35 */
 /* After normalizing header fields, reject v24.0 via image-stride probe. */
 if (version == 24 && is_v24_0 (meta))  return NULL;
 ```
@@ -133,13 +146,15 @@ if (version == 24 && is_v24_0 (meta))  return NULL;
 | 29           | Accepted via `_v29` header struct | Header correct. Method rows decoded as 32 B. Reverse-P/Invoke BLOB path is the only v29-specific code. |
 | 30           | Accepted                          | Never shipped on disk; dead slot, safe.                                                    |
 | 31           | Accepted                          | Method rows decoded as 36 B (dedicated v31 branch); other row types still assume v24.1+ layout. |
+| 36 – 37      | Rejected                          | Header shape is unknown; v38 is the first confirmed section-triple layout.                  |
+| 39           | Accepted via `_v38` header struct | Confirmed against the latest local reproducer. Adds compact `ParameterIndex`.               |
 
 **Bottom line**: the acceptance band covers every commercially
 relevant Unity build from 2017 onward, but within the band the
-fixed 88 / 32 / 40 / 48–52 strides in the row decoders are correct
-only for a subset. A per-version size table is the single
-highest-priority portability fix. The required values are itemised
-in §4.
+old fixed 88 / 32 / 40 / 48–52 strides are correct only for a
+subset. The current parser now computes the decoded v38/v39 row
+sizes from section counts and compact-index widths; pre-v24 and
+native-side version gaps remain future work.
 
 ### 1.5 Architecture-independence of `global-metadata.dat`
 
@@ -696,23 +711,30 @@ and code scanning.
 
 ### 4.1 Portability fixes (correctness)
 
-1. **Version-gated entry sizes.** Replace the literal 88 / 32 / 40
-	in `r2unity_get_type_definitions` /
-	`r2unity_get_method_definitions` / `r2unity_get_images` with a
-	lookup keyed on wire version. Critical values:
+1. **Version-gated entry sizes.** The decoded tables now compute
+	the v38/v39 row sizes from section counts and compact-index
+	widths. Keep extending this approach instead of reintroducing
+	literal strides. Critical historical values:
 
 	- `Il2CppMethodDefinition`:
 		- v≤24.0: 52 B (includes `customAttributeIndex`,
 			`methodIndex`, `invokerIndex`, `delegateWrapperIndex`,
 			`rgctxStartIndex`, `rgctxCount`).
-		- v24.1 – v30: 32 B (current assumption — correct only here).
+		- v24.1 – v30: 32 B.
 		- v31+: 36 B (`returnParameterToken` added).
+		- v35+/v38+: `declaringType`, `returnType`, and
+			`genericContainerIndex` may shrink to 1/2/4-byte compact
+			indices.
+		- v39+: `parameterStart` may also shrink to a compact
+			`ParameterIndex`.
 	- `Il2CppImageDefinition`:
 		- v≤18: 24 B.
 		- v19 – v23: 28 B (adds `token`).
 		- v24 – v24.0: 36 B (adds exported-type range).
-		- v24.1+: 40 B (adds `customAttribute` range) — current
-			assumption.
+		- v24.1+: 40 B before compact-index shrinkage (adds
+			`customAttribute` range).
+		- v35+/v38+: `typeStart` and `exportedTypeStart` may shrink
+			to compact `TypeDefinitionIndex` fields.
 	- `Il2CppTypeDefinition`:
 		- pre-v24: extra legacy fields
 			(`delegateWrapperFromManagedToNativeIndex`,
@@ -720,24 +742,27 @@ and code scanning.
 			`guidIndex`).
 		- v24 – v24.0: `customAttributeIndex` + `byrefTypeIndex` +
 			`rgctxStartIndex` + `rgctxCount`.
-		- v24.1+: 88 B — current assumption.
+		- v24.1+: 88 B before compact-index shrinkage.
+		- v32+: `elementTypeIndex` is no longer serialized.
+		- v35+/v38+: type-like indices may shrink to compact
+			serialized widths.
 
 	Always source the size from
 	`third_party/Il2CppDumper/Il2Cpp/MetadataClass.cs` per wire
 	version.
 
-2. **Per-version header struct.** Distinguish v24.0 from v24.1+
+2. **Per-version header struct.** v38+ is now represented as the
+	31-section header. Remaining gaps: distinguish v24.0 from v24.1+
 	headers so assembly / image entries are decoded correctly on
 	unresolved-virtual-call pointer arrays.
 
 	distinct wire version we claim to support (21, 22, 23, 24, 27,
-	29, 31). Pull candidates from the Il2CppDumper issue-tracker
-	corpus if new ones are needed.
+	29, 31, 38, 39). Pull candidates from the Il2CppDumper
+	issue-tracker corpus if new ones are needed.
 
-4. **Fail loudly on truly unknown versions.** Current code treats
-	v30/v31 as v29-shaped; that's correct for the header but should
-	be an informative warning (not silence) when row decoders
-	haven't been audited for a new sub-version.
+4. **Fail loudly on truly unknown versions.** v36/v37 are currently
+	rejected because their header shape is not proven. Keep that
+	confirm the layout.
 
 ### 4.2 Feature additions (coverage)
 
@@ -796,15 +821,13 @@ Ordered by RE value vs. implementation effort:
 
 ### 4.5 Sources and caveats
 
-- The Unity 6 (`6000.x`) row in §1.3 is provisional. The mapping is
-	inferred from `[Version(Min = 31)] returnParameterToken` being
-	the current high-water mark in `Il2CppDumper` plus release-date
-	alignment. No Unity 6 metadata binary was directly inspected.
+- v39 is confirmed by the local Unity 6 reproducer. v38 support is
+	based on the current Il2CppDumper v39 source layout; keep it
 - Il2CppDumper's bundled snapshot is what drives these layout
-	tables; newer Unity releases may introduce a `v33` / `v31.x`
-	sub-version that won't be caught until the vendored copy is
-	refreshed. A quarterly bump of `third_party/Il2CppDumper/` is
-	the lightest way to track new Unity releases.
+	tables; newer Unity releases may introduce another whole wire
+	version or sub-version that won't be caught until the vendored
+	copy is refreshed. A quarterly bump of `third_party/Il2CppDumper/`
+	is the lightest way to track new Unity releases.
 - Il2CppInspector's `MetadataClasses.cs` / `MetadataVersions.cs` is
 	an independent second opinion; pulling it as a cross-check would
 	let us confirm a few uncertain sub-version boundaries (notably
@@ -829,6 +852,9 @@ Ordered by RE value vs. implementation effort:
 	layout source; `Utils/Il2CppExecutor.cs` is the authoritative
 	BLOB decoder.
 	<https://github.com/Perfare/Il2CppDumper>
+- Il2CppDumper v39 metadata structs — current source used for the
+	v38/v39 section header and compact-index rules.
+	<https://raw.githubusercontent.com/roytu/Il2CppDumper/v39/Il2CppDumper/Il2Cpp/MetadataClass.cs>
 - Il2CppInspector — per-version deltas and Unity-version matrix.
 	<https://github.com/djkaty/Il2CppInspector>
 - REAndroid/lib-global-metadata — independent Java port.

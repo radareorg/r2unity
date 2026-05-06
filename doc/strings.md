@@ -67,7 +67,7 @@ stringLiteralOffset     .. +stringLiteralSize      — table of rows
 stringLiteralDataOffset .. +stringLiteralDataSize  — payload bytes
 ```
 
-Each row in the table is 8 bytes:
+Up through v31, each row in the table is 8 bytes:
 
 ```c
 typedef struct {
@@ -80,6 +80,19 @@ So `stringLiteralSize / 8` is the total number of `ldstr` constants
 in the build. The payload for literal `i` lives at bytes
 `stringLiteralDataOffset + row[i].dataIndex ..
  + row[i].dataIndex + row[i].length`, and is *not* NUL-terminated.
+
+On v38+ metadata, the string-literal section is described by an
+`Il2CppMetadataSection` with an explicit `count`, and each row stores
+only:
+
+```c
+uint32_t dataIndex;       /* offset into the payload area */
+```
+
+The payload length is inferred from `row[i + 1].dataIndex -
+row[i].dataIndex`; the last row runs to `stringLiteralDataSize`.
+This is why v38+ literal decoding must use the section count instead
+of `stringLiteralSize / 8`.
 
 ### 1.3 Why two regions
 
@@ -164,9 +177,10 @@ This keeps output terminal-safe and deterministic across locales.
 
 ### 4.1 API path
 
-- `r2unity_get_string_literals(meta, &count)` — decodes the 8-byte
-	rows into an `Il2CppStringLiteral *` array of length `count =
-	stringLiteralSize / 8`.
+- `r2unity_get_string_literals(meta, &count)` — decodes legacy
+	8-byte rows or v38+ 4-byte `dataIndex` rows into an
+	`Il2CppStringLiteral *` array. On v38+ the length is synthesized
+	from neighbouring indices.
 - `r2unity_read_string_literal(meta, &row, &out_bytes, &out_len)` —
 	bounds-checks the row against `stringLiteralDataSize` and
 	returns a freshly-allocated copy of the payload. When the row

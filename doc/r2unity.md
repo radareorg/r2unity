@@ -70,14 +70,14 @@ Upstream references (also used to cross-check every decoder):
 
 ```text
 +0x00  uint32_t  sanity    = 0xFAB11BAF
-+0x04  int32_t   version   ∈ {16,19,20,21,22,23,24,27,29,31}
++0x04  int32_t   version   ∈ {16,19,20,21,22,23,24,27,29,31,38,39}
 +0x08  Il2CppGlobalMetadataHeader (version-dependent size)
 ```
 
 The magic is a constant that never changes across the file's entire
 history. `version` selects the layout of the header that follows. On
-disk, `version` is always one of the shipped values listed above;
-values `17, 18, 25, 26, 28, 30` were reserved but never released.
+disk, `version` is normally one of the shipped values listed above;
+values between those releases were reserved, experimental, or have
 
 All scalars in the file are **little-endian**, regardless of host
 platform. There are no native pointers anywhere in the file; only
@@ -85,8 +85,23 @@ byte offsets into the file and dense indices into other tables.
 
 ### 1.2 The header: a table of contents
 
-The header is an array of `{uint32_t offset, int32_t size}` pairs, one
-per logical table. `lib.h` declares three C layouts:
+The pre-v38 header is an array of `{uint32_t offset, int32_t size}`
+pairs, one per logical table. Starting at v38, each entry becomes an
+`Il2CppMetadataSection` triple:
+
+```c
+typedef struct {
+	uint32_t offset;
+	uint32_t size;
+	uint32_t count;
+} Il2CppMetadataSection;
+```
+
+`count` is the row count for real tables. This removes most stride
+guessing for new metadata: when `count != 0`, row size is
+`size / count`; when `count == 0`, the section is a byte pool.
+
+`lib.h` declares four C layouts:
 
 - `Il2CppGlobalMetadataHeader_v24` — ends at
 	`exportedTypeDefinitions`; trailing WinRT slots are present but
@@ -98,19 +113,28 @@ per logical table. `lib.h` declares three C layouts:
 	`rgctxEntriesData{Offset,Size}`, i.e. the out-of-line BLOB pool
 	used for RGCTX payloads and — critically — for the new v29
 	custom-attribute encoding (see §2.11).
+- `Il2CppGlobalMetadataHeader_v38` — replaces all offset/size pairs
+	with 31 `{offset,size,count}` sections, in the same logical order
+	as the older header up through `exportedTypeDefinitions`.
 
-Each pair encodes `[offset, offset+size)` of one table relative to
+Each entry encodes `[offset, offset+size)` of one table relative to
 the file start. Sections are not required to be contiguous or in any
 particular order; the header is the only ground truth.
 
-The three structs are held in a `union Il2CppGlobalMetadataHeader`.
+The four structs are held in a `union Il2CppGlobalMetadataHeader`.
 Selection is purely by `version`:
 
 ```c
-if (version < 27)        layout = v24;
+if (version >= 38)       layout = v38;
+else if (version < 27)   layout = v24;
 else if (version < 29)   layout = v27;
-else                     layout = v29;  /* 29, 30, 31 */
+else                     layout = v29;  /* 29..35 */
 ```
+
+r2unity normalizes both forms into `R2UnityMetadata.sections[]`.
+For legacy headers, `count` is zero and row counts are still derived
+from known or inferred entry sizes. For v38+, section counts are
+trusted after the usual file-bounds checks.
 
 There are more than two dozen tables in total. r2unity currently
 consumes the header offsets/sizes for:
@@ -121,11 +145,12 @@ consumes the header offsets/sizes for:
 `typeDefinitionsOffset`, `typeDefinitionsSize`, `imagesOffset`,
 `imagesSize`, `assembliesOffset`, `assembliesSize`,
 `referencedAssembliesOffset`, `referencedAssembliesSize`, and — on
-v29+ — the BLOB pool fields at `attributesInfo*` /
-`attributeTypes*` (repurposed to `attributeDataRange` /
-`attributeData` under new semantics).
+v29+ — the BLOB pool fields at `attributesInfo*` / `attributeTypes*`
+(legacy names for `attributeDataRange` / `attributeData`). On v38+
+the same logical regions are consumed through `R2U_SEC_*` section
+ids instead of individual `*Offset` and `*Size` fields.
 
-Every other header pair is declared but unused. §2.11 and
+Every other header entry is declared but unused. §2.11 and
 `doc/future.md` enumerate what's still on the floor and why each
 would be worth decoding.
 
@@ -142,11 +167,14 @@ addressed differently:
 	aggressively by the packer.
 2. **Managed string-literal payload area** at
 	`stringLiteralDataOffset .. +stringLiteralDataSize`, indexed by
-	fixed-length `{length, dataIndex}` rows in
-	`stringLiteralOffset .. +stringLiteralSize`. These are ECMA-335
-	`ldstr` constants (§III.4.16). They can contain embedded NULs,
-	raw UTF-16 payloads, or arbitrary binary blobs (`byte[]` literals
-	are sometimes produced with `RuntimeHelpers.InitializeArray`).
+	rows in `stringLiteralOffset .. +stringLiteralSize`. Up through
+	v31, each row is `{uint32_t length, uint32_t dataIndex}`. On
+	v38+, rows store only `dataIndex`; the length is inferred from
+	the next row's `dataIndex`, or from `stringLiteralDataSize` for
+	the last row. These are ECMA-335 `ldstr` constants (§III.4.16).
+	They can contain embedded NULs, raw UTF-16 payloads, or arbitrary
+	binary blobs (`byte[]` literals are sometimes produced with
+	`RuntimeHelpers.InitializeArray`).
 
 This separation matters for tooling: a naïve "dump all strings"
 pass on just the metadata pool misses every `ldstr` constant.
@@ -159,14 +187,26 @@ There are two distinct integer namespaces used throughout the file.
 #### Dense row indices
 
 Every table in the file is an array; every reference between tables
-is just the 32-bit (sometimes 16-bit) index into the target table.
+is an index into the target table. On older metadata these indices
+are usually 32-bit integers. Newer metadata can serialize common
+index types in 1, 2, or 4 bytes depending on the target table count.
 `Il2CppMethodDefinition.declaringType` is an index into
 `typeDefinitions`; `Il2CppTypeDefinition.methodStart` is an index
 into `methods`; `Il2CppFieldDefinition.typeIndex` is an index into
 the native-side `Il2CppMetadataRegistration.types` pool (§3). No
 cross-reference uses a file offset.
 
-Sentinel `-1` (`0xFFFFFFFF` as unsigned) is the universal "none".
+Sentinel "none" is all-bits-one at the serialized width:
+`0xFF`, `0xFFFF`, or `0xFFFFFFFF`. r2unity expands all of them to
+`-1` in its public structs.
+
+For v38/v39 support, r2unity currently derives:
+
+- `TypeIndex` width from the `parameters` row size.
+- `TypeDefinitionIndex` width from `typeDefinitions.count`.
+- `GenericContainerIndex` width from `genericContainers.count`.
+- `ParameterIndex` width from `parameters.count` on v39+; older
+	accepted metadata keeps this as 32-bit.
 
 #### ECMA-335 metadata tokens
 
@@ -202,11 +242,17 @@ declares, with current r2unity coverage called out where relevant.
 ### 2.1 `Il2CppTypeDefinition` — classes, structs, enums, delegates
 
 Every CLR type that survives into the IL2CPP build gets one row.
-88 B on the v24.1..v31 layout r2unity targets today. Pre-v24 rows
+88 B on the v24.1..v31 layout. Pre-v24 rows
 carried extra legacy interop slots (`delegateWrapperFromManagedToNativeIndex`,
 `marshalingFunctionsIndex`, `ccwFunctionIndex`, `guidIndex`), and
 v24.0 still carried inline `customAttributeIndex` before token-based
 lookup took over at v24.1.
+
+On v32+ metadata, `elementTypeIndex` is no longer serialized in this
+row. On v35+/v38+ style metadata, the type-like indices inside the
+row use compact 1/2/4-byte serialized widths. r2unity decodes those
+rows into the stable public `Il2CppTypeDefinition` shape; the
+removed `elementTypeIndex` currently falls back to `parentIndex`.
 
 Fields (v24.1+):
 
@@ -243,8 +289,9 @@ nested-types list).
 
 ### 2.2 `Il2CppMethodDefinition` — every managed method
 
-32 B (v24.1..v30) or 36 B (v31+). r2unity has explicit paths for
-both.
+32 B (v24.1..v30) or 36 B (v31+) before compact-index shrinkage.
+r2unity computes the current stride from the active version and
+serialized index widths.
 
 v24.1..v30 layout:
 
@@ -267,6 +314,11 @@ and `returnType` (hence 36 B instead of 32 B). It carries the
 row, aligning IL2CPP with ECMA-335's treatment of return-type
 custom attributes (§II.22.33: the `Param` table row with `Sequence =
 0` represents the return value).
+
+On v35+ metadata, `declaringType`, `returnType`, and
+`genericContainerIndex` can be compact serialized indices. On v39+,
+`parameterStart` can also be compact. The public struct still exposes
+the decoded values as signed 32-bit integers.
 
 v24.0 and below carried an additional set of inline indices:
 `customAttributeIndex` (before tokens took over), `methodIndex`,
@@ -371,9 +423,10 @@ Not exposed by r2unity today.
 ### 2.7 `Il2CppImageDefinition` and `Il2CppAssemblyDefinition`
 
 One image per managed PE assembly; one assembly per image in every
-wire version r2unity currently targets. Images are 40 B (v24.1+),
-36 B (v24.0), 28 B (v19..v23), 24 B (pre-v18). r2unity assumes the
-v24.1+ 40 B stride.
+wire version r2unity currently targets. Images are 40 B (v24.1+)
+before compact-index shrinkage, 36 B (v24.0), 28 B (v19..v23), and
+24 B (pre-v18). On v35+/v38+ metadata, `typeStart` and
+`exportedTypeStart` can use compact `TypeDefinitionIndex` widths.
 
 ```c
 typedef struct {    /* Il2CppImageDefinition (v24.1+, 40 B) */
@@ -419,7 +472,10 @@ key, byte-reversed). r2unity decodes both tail layouts:
 - 48 B (`hashValueIndex` removed in v24.3+)
 
 The tail is picked by inferring `assembliesSize / image_count` and
-matching.
+matching on legacy headers, or by using the v38+ section count.
+Starting at v38, `Il2CppAssemblyDefinition` also has a `moduleToken`
+field before the name tail, so the tail starts at row offset 20
+instead of 16.
 
 ### 2.8 `referencedAssemblies` — flat `int32_t[]`
 
@@ -913,24 +969,29 @@ Unity-release → wire-version → sub-version mapping.
 	`unresolvedVirtualCallPointers` into separate instance/static
 	arrays.
 - **v30**: reserved, never shipped.
-- **v31** (Unity 2023.1..6000.x): adds `returnParameterToken` to
+- **v31** (Unity 2023.1..2023.x): adds `returnParameterToken` to
 	`Il2CppMethodDefinition`, aligning with ECMA-335's return-value
 	param-row model.
+- **v38** (Unity 6 era): switches the header from offset/size pairs
+	to 31 `{offset,size,count}` section records and changes string
+	literal rows to `dataIndex`-only.
+	and compacts additional serialized indices, including
+	`ParameterIndex`.
 
-r2unity's current acceptance band is **v24.1..v31**, with dedicated
-handling only for the v24.1+ table strides and the v31
-`returnParameterToken` insertion. Since the on-disk `version` field is
-`24` for both v24.0 and v24.1+, the parser probes the image-row stride
-(32 B on v24.0, 40 B on v24.1+) and rejects v24.0 explicitly to avoid
-silent mis-decoding of TypeDefinition/MethodDefinition/ImageDefinition
-rows.
+r2unity's current shipped-version acceptance band is **v24.1..v31**
+plus **v38..v39**. It also accepts unobserved v32..v35 as
+v29/v31-shaped metadata, because the known compact-index annotations
+header shape. Since the on-disk `version` field is `24` for both
+v24.0 and v24.1+, the parser probes the image-row stride (32 B on
+v24.0, 40 B on v24.1+) and rejects v24.0 explicitly to avoid silent
+mis-decoding of TypeDefinition/MethodDefinition/ImageDefinition rows.
 
 ## 5. How the parser is wired in r2unity
 
 File-by-file map:
 
 - `src/lib/lib.h` — every structure, constant, and public entry
-	point declared. The three `Il2CppGlobalMetadataHeader_v{24,27,29}`
+	point declared. The `Il2CppGlobalMetadataHeader_v{24,27,29,38}`
 	layouts are here, in a `union`, plus the normalized
 	`R2UnityMetadata` snapshot.
 - `src/lib/lib.c` — header parsing, string pool, literal decoding,
@@ -1000,11 +1061,11 @@ Already extracted by r2unity (library + CLI):
 
 | Source                      | Shape                       |
 |-----------------------------|-----------------------------|
-| metadata header             | version, all table offsets  |
+| metadata header             | version, sections/offsets   |
 | metadata string pool        | on-demand `get_string`      |
 | managed string literals     | full dump (`-z`)            |
 | type definitions            | per-row decoder             |
-| method definitions          | per-row decoder (v24.1..v31)|
+| method definitions          | per-row decoder             |
 | image definitions           | per-row decoder             |
 | assembly definitions        | per-row decoder             |
 | referenced assemblies       | flat int32 array            |
@@ -1067,6 +1128,9 @@ Primary references used by r2unity's decoders:
 	<https://ecma-international.org/publications-and-standards/standards/ecma-334/>
 - Perfare/Il2CppDumper (C# reference)
 	<https://github.com/Perfare/Il2CppDumper>
+- Il2CppDumper v39 metadata structs used for the v38/v39 layout
+	update:
+	<https://raw.githubusercontent.com/roytu/Il2CppDumper/v39/Il2CppDumper/Il2Cpp/MetadataClass.cs>
 - djkaty/Il2CppInspector (alternative C# reference + Unity
 	version matrix)
 	<https://github.com/djkaty/Il2CppInspector>

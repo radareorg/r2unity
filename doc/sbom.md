@@ -150,11 +150,12 @@ per CycloneDX 1.5 `dependencies[]`.
 
 ### 2.1 Tables touched
 
-- `Il2CppImageDefinition` (40 B rows, v24.1+ layout) — current
-	assumption.
+- `Il2CppImageDefinition` (40 B rows on v24.1..v31; compact
+	`TypeDefinitionIndex` fields can shrink newer rows).
 - `Il2CppAssemblyDefinition` (variable row size inferred as
-	`assembliesSize / imageCount`, because there is one assembly
-	per image on every supported wire version).
+	`assembliesSize / imageCount` on legacy headers, or read from the
+	v38+ section count because there is one assembly per image on
+	every supported wire version).
 - `Il2CppAssemblyNameDefinition` (trailing struct; 48 B with
 	`hashValueIndex` removed, 52 B with `hashValueIndex` present —
 	the tail is chosen to match the inferred row size).
@@ -165,17 +166,18 @@ per CycloneDX 1.5 `dependencies[]`.
 ### 2.2 Why the stride is inferred, not looked up
 
 `assembliesSize` is the raw byte size of the assembly section.
-`imageCount` is known from `imagesSize / 40`. Their ratio gives the
-per-row stride for `Il2CppAssemblyDefinition`, which varies across
-wire versions because the trailing `Il2CppAssemblyNameDefinition`
-changed size twice:
+On legacy headers, `imageCount` is known from the decoded image table
+and `assembliesSize / imageCount` gives the per-row stride for
+`Il2CppAssemblyDefinition`. On v38+ headers the section count can be
+used directly. The assembly row varies across wire versions because
+the trailing `Il2CppAssemblyNameDefinition` changed size and because
+v38 inserted a `moduleToken` before that tail:
 
 - `hashValueIndex` removed at v24.3+ → row shrinks 4 B.
 - `customAttributeIndex` removed at v24.1 → another 4 B.
 - `token` added at v24.1 → 4 B back.
-
-A per-version explicit layout table (rather than inference) is on
-the list of correctness fixes; see `doc/future.md` §4.1.
+- `moduleToken` added at v38 → `Il2CppAssemblyNameDefinition` starts
+	at row offset 20 instead of 16.
 
 ### 2.3 Version-range inference
 
@@ -194,11 +196,15 @@ r2unity uses this mapping:
 | 24           | 5.6 – 2020.1        |
 | 27           | 2020.2 – 2021.3     |
 | 29           | 2022.1 – 2022.3     |
-| 31           | 2023.1 – 6000.x     |
+| 31           | 2023.1 – 2023.x     |
+| 38           | Unity 6 era         |
+| 39           | Unity 6 current     |
 
-Only wire versions 24..31 are accepted by the parser. `doc/future.md`
-§1.3 has the full version-to-sub-version matrix with 10 additional
-rows for specific Unity 2018/2019/2020/2021/2022 minor releases.
+The parser accepts shipped wire versions 24.1..31 and 38..39, rejects
+24.0 and 36..37, and keeps a compatibility path for unobserved
+32..35. `doc/future.md` §1.3 has the full version-to-sub-version
+matrix with additional rows for specific Unity 2018/2019/2020/2021/
+2022 minor releases and the v38/v39 Unity 6 metadata break.
 
 ## 3. What the shipped `-S` does not do
 

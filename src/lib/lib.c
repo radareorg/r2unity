@@ -13,6 +13,161 @@ R_API bool r2unity_is_debug(void) {
 	return g_debug;
 }
 
+typedef enum {
+	R2U_SEC_STRING_LITERALS,
+	R2U_SEC_STRING_LITERAL_DATA,
+	R2U_SEC_STRINGS,
+	R2U_SEC_EVENTS,
+	R2U_SEC_PROPERTIES,
+	R2U_SEC_METHODS,
+	R2U_SEC_PARAMETER_DEFAULT_VALUES,
+	R2U_SEC_FIELD_DEFAULT_VALUES,
+	R2U_SEC_FIELD_AND_PARAMETER_DEFAULT_VALUE_DATA,
+	R2U_SEC_FIELD_MARSHALED_SIZES,
+	R2U_SEC_PARAMETERS,
+	R2U_SEC_FIELDS,
+	R2U_SEC_GENERIC_PARAMETERS,
+	R2U_SEC_GENERIC_PARAMETER_CONSTRAINTS,
+	R2U_SEC_GENERIC_CONTAINERS,
+	R2U_SEC_NESTED_TYPES,
+	R2U_SEC_INTERFACES,
+	R2U_SEC_VTABLE_METHODS,
+	R2U_SEC_INTERFACE_OFFSETS,
+	R2U_SEC_TYPE_DEFINITIONS,
+	R2U_SEC_IMAGES,
+	R2U_SEC_ASSEMBLIES,
+	R2U_SEC_FIELD_REFS,
+	R2U_SEC_REFERENCED_ASSEMBLIES,
+	R2U_SEC_ATTRIBUTE_DATA,
+	R2U_SEC_ATTRIBUTE_DATA_RANGES,
+	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_TYPES,
+	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_RANGES,
+	R2U_SEC_WINDOWS_RUNTIME_TYPE_NAMES,
+	R2U_SEC_WINDOWS_RUNTIME_STRINGS,
+	R2U_SEC_EXPORTED_TYPE_DEFINITIONS
+} R2UMetadataSectionId;
+
+static int index_size_from_count(uint32_t count) {
+	if (count <= 0xff) {
+		return 1;
+	}
+	if (count <= 0xffff) {
+		return 2;
+	}
+	return 4;
+}
+
+static bool valid_index_size(int size) {
+	return size == 1 || size == 2 || size == 4;
+}
+
+static int32_t read_sized_index(const ut8 *p, int size) {
+	switch (size) {
+	case 1: {
+		uint32_t value = p[0];
+		return value == 0xff? -1: (int32_t)value;
+	}
+	case 2: {
+		uint32_t value = r_read_le16 (p);
+		return value == 0xffff? -1: (int32_t)value;
+	}
+	case 4:
+	default: {
+		uint32_t value = r_read_le32 (p);
+		return value == UT32_MAX? -1: (int32_t)value;
+	}
+	}
+}
+
+static uint32_t read_u32p(const ut8 **p) {
+	uint32_t value = r_read_le32 (*p);
+	*p += 4;
+	return value;
+}
+
+static int32_t read_i32p(const ut8 **p) {
+	return (int32_t)read_u32p (p);
+}
+
+static uint16_t read_u16p(const ut8 **p) {
+	uint16_t value = r_read_le16 (*p);
+	*p += 2;
+	return value;
+}
+
+static int32_t read_indexp(const ut8 **p, int size) {
+	int32_t value = read_sized_index (*p, size);
+	*p += size;
+	return value;
+}
+
+static void set_section(Il2CppMetadataSection *s, uint32_t off, int32_t size) {
+	s->offset = off;
+	s->size = (uint32_t)R_MAX (0, size);
+	s->count = 0;
+}
+
+static void init_legacy_sections(R2UnityMetadata *meta) {
+	const Il2CppGlobalMetadataHeader_v24 *h = &meta->header.v24;
+	Il2CppMetadataSection *s = meta->sections;
+	set_section (&s[R2U_SEC_STRING_LITERALS], h->stringLiteralOffset, h->stringLiteralSize);
+	set_section (&s[R2U_SEC_STRING_LITERAL_DATA], h->stringLiteralDataOffset, h->stringLiteralDataSize);
+	set_section (&s[R2U_SEC_STRINGS], h->stringOffset, h->stringSize);
+	set_section (&s[R2U_SEC_EVENTS], h->eventsOffset, h->eventsSize);
+	set_section (&s[R2U_SEC_PROPERTIES], h->propertiesOffset, h->propertiesSize);
+	set_section (&s[R2U_SEC_METHODS], h->methodsOffset, h->methodsSize);
+	set_section (&s[R2U_SEC_PARAMETER_DEFAULT_VALUES], h->parameterDefaultValuesOffset, h->parameterDefaultValuesSize);
+	set_section (&s[R2U_SEC_FIELD_DEFAULT_VALUES], h->fieldDefaultValuesOffset, h->fieldDefaultValuesSize);
+	set_section (&s[R2U_SEC_FIELD_AND_PARAMETER_DEFAULT_VALUE_DATA], h->fieldAndParameterDefaultValueDataOffset, h->fieldAndParameterDefaultValueDataSize);
+	set_section (&s[R2U_SEC_FIELD_MARSHALED_SIZES], h->fieldMarshaledSizesOffset, h->fieldMarshaledSizesSize);
+	set_section (&s[R2U_SEC_PARAMETERS], h->parametersOffset, h->parametersSize);
+	set_section (&s[R2U_SEC_FIELDS], h->fieldsOffset, h->fieldsSize);
+	set_section (&s[R2U_SEC_GENERIC_PARAMETERS], h->genericParametersOffset, h->genericParametersSize);
+	set_section (&s[R2U_SEC_GENERIC_PARAMETER_CONSTRAINTS], h->genericParameterConstraintsOffset, h->genericParameterConstraintsSize);
+	set_section (&s[R2U_SEC_GENERIC_CONTAINERS], h->genericContainersOffset, h->genericContainersSize);
+	set_section (&s[R2U_SEC_NESTED_TYPES], h->nestedTypesOffset, h->nestedTypesSize);
+	set_section (&s[R2U_SEC_INTERFACES], h->interfacesOffset, h->interfacesSize);
+	set_section (&s[R2U_SEC_VTABLE_METHODS], h->vtableMethodsOffset, h->vtableMethodsSize);
+	set_section (&s[R2U_SEC_INTERFACE_OFFSETS], h->interfaceOffsetsOffset, h->interfaceOffsetsSize);
+	set_section (&s[R2U_SEC_TYPE_DEFINITIONS], h->typeDefinitionsOffset, h->typeDefinitionsSize);
+	set_section (&s[R2U_SEC_IMAGES], h->imagesOffset, h->imagesSize);
+	set_section (&s[R2U_SEC_ASSEMBLIES], h->assembliesOffset, h->assembliesSize);
+	set_section (&s[R2U_SEC_FIELD_REFS], h->fieldRefsOffset, h->fieldRefsSize);
+	set_section (&s[R2U_SEC_REFERENCED_ASSEMBLIES], h->referencedAssembliesOffset, h->referencedAssembliesSize);
+	set_section (&s[R2U_SEC_ATTRIBUTE_DATA], h->attributesInfoOffset, h->attributesInfoSize);
+	set_section (&s[R2U_SEC_ATTRIBUTE_DATA_RANGES], h->attributeTypesOffset, h->attributeTypesSize);
+	set_section (&s[R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_TYPES], h->unresolvedVirtualCallParameterTypesOffset, h->unresolvedVirtualCallParameterTypesSize);
+	set_section (&s[R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_RANGES], h->unresolvedVirtualCallParameterRangesOffset, h->unresolvedVirtualCallParameterRangesSize);
+	set_section (&s[R2U_SEC_WINDOWS_RUNTIME_TYPE_NAMES], h->windowsRuntimeTypeNamesOffset, h->windowsRuntimeTypeNamesSize);
+	set_section (&s[R2U_SEC_WINDOWS_RUNTIME_STRINGS], h->windowsRuntimeStringsOffset, h->windowsRuntimeStringsSize);
+	set_section (&s[R2U_SEC_EXPORTED_TYPE_DEFINITIONS], h->exportedTypeDefinitionsOffset, h->exportedTypeDefinitionsSize);
+}
+
+static ut8 *read_metadata_table(R2UnityMetadata *meta, R2UMetadataSectionId id, ut64 entry, size_t *count) {
+	Il2CppMetadataSection s = meta->sections[id];
+	*count = 0;
+	if (!entry || s.size < entry) {
+		return NULL;
+	}
+	*count = s.count? (size_t)s.count: (size_t)(s.size / entry);
+	ut64 read_size = (ut64)*count * entry;
+	if (!*count || read_size > s.size) {
+		*count = 0;
+		return NULL;
+	}
+	ut8 *buf = R_NEWS (ut8, read_size);
+	if (!buf) {
+		*count = 0;
+		return NULL;
+	}
+	if (r_buf_read_at (meta->buf, s.offset, buf, read_size) != (st64)read_size) {
+		R_FREE (buf);
+		*count = 0;
+		return NULL;
+	}
+	return buf;
+}
+
 /* Detect v24.0 vs v24.1+ (both land on disk as version==24).
  *
  * At v24.1 the ImageDefinition row grew by 8 bytes (added
@@ -25,8 +180,9 @@ R_API bool r2unity_is_debug(void) {
  * ImageDefinition) is tracked separately; reject for now so decoders don't
  * silently return wrong offsets. */
 static bool is_v24_0(R2UnityMetadata *meta) {
-	ut64 ioff = meta->header.v24.imagesOffset;
-	ut64 isize = meta->header.v24.imagesSize;
+	Il2CppMetadataSection sec = meta->sections[R2U_SEC_IMAGES];
+	ut64 ioff = sec.offset;
+	ut64 isize = sec.size;
 	if (!isize) {
 		return false;
 	}
@@ -60,21 +216,27 @@ R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf) {
 		return NULL;
 	}
 	int32_t version = (int32_t)r_read_le32 (preamble + 4);
-	if (version < 24 || version > 31) {
+	if (version < 24 || version > 39 || (version > 35 && version < 38)) {
 		return NULL;
 	}
 	size_t header_size;
-	if (version < 27) {
+	if (version >= 38) {
+		header_size = sizeof (Il2CppGlobalMetadataHeader_v38);
+	} else if (version < 27) {
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v24);
 	} else if (version < 29) {
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v27);
 	} else {
-		/* v29+ shares layout (v30, v31 reuse these fields). */
+		/* v29..v35 share layout (v30, v31 reuse these fields). */
 		header_size = sizeof (Il2CppGlobalMetadataHeader_v29);
 	}
 	R2UnityMetadata *meta = R_NEW0 (R2UnityMetadata);
 	meta->version = version;
 	meta->buf = buf;
+	meta->typeIndexSize = 4;
+	meta->typeDefinitionIndexSize = 4;
+	meta->genericContainerIndexSize = 4;
+	meta->parameterIndexSize = 4;
 	if (r_buf_read_at (buf, 0, (ut8 *)&meta->header.v24, header_size) != (st64)header_size) {
 		R_FREE (meta);
 		return NULL;
@@ -86,19 +248,35 @@ R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf) {
 	for (size_t i = 0; i < nfields; i++) {
 		hdr_words[i] = r_read_le32 (&hdr_words[i]);
 	}
-	/* v24/v27/v29 share identical layout for fields up to exportedTypeDefinitions,
-	 * so accessing them via the v24 view is valid for every supported version. */
-	const Il2CppGlobalMetadataHeader_v24 *h = &meta->header.v24;
-	meta->stringOffset = h->stringOffset;
-	meta->stringSize = h->stringSize;
-	meta->stringLiteralOffset = h->stringLiteralOffset;
-	meta->stringLiteralSize = h->stringLiteralSize;
-	meta->stringLiteralDataOffset = h->stringLiteralDataOffset;
-	meta->stringLiteralDataSize = h->stringLiteralDataSize;
-	meta->methodsOffset = h->methodsOffset;
-	meta->methodsSize = h->methodsSize;
-	meta->typeDefinitionsOffset = h->typeDefinitionsOffset;
-	meta->typeDefinitionsSize = h->typeDefinitionsSize;
+	if (version >= 38) {
+		memcpy (meta->sections, &meta->header.v38.stringLiterals, sizeof (meta->sections));
+		Il2CppMetadataSection *s = meta->sections;
+		if (s[R2U_SEC_PARAMETERS].count) {
+			uint32_t param_entry = s[R2U_SEC_PARAMETERS].size / s[R2U_SEC_PARAMETERS].count;
+			if (param_entry >= 8) {
+				meta->typeIndexSize = (int)param_entry - 8;
+			}
+		}
+		if (!valid_index_size (meta->typeIndexSize)) {
+			meta->typeIndexSize = 4;
+		}
+		meta->typeDefinitionIndexSize = index_size_from_count (s[R2U_SEC_TYPE_DEFINITIONS].count);
+		meta->genericContainerIndexSize = index_size_from_count (s[R2U_SEC_GENERIC_CONTAINERS].count);
+		meta->parameterIndexSize = version >= 39? index_size_from_count (s[R2U_SEC_PARAMETERS].count): 4;
+	} else {
+		init_legacy_sections (meta);
+	}
+	Il2CppMetadataSection *s = meta->sections;
+	meta->stringOffset = s[R2U_SEC_STRINGS].offset;
+	meta->stringSize = (int32_t)s[R2U_SEC_STRINGS].size;
+	meta->stringLiteralOffset = s[R2U_SEC_STRING_LITERALS].offset;
+	meta->stringLiteralSize = (int32_t)s[R2U_SEC_STRING_LITERALS].size;
+	meta->stringLiteralDataOffset = s[R2U_SEC_STRING_LITERAL_DATA].offset;
+	meta->stringLiteralDataSize = (int32_t)s[R2U_SEC_STRING_LITERAL_DATA].size;
+	meta->methodsOffset = s[R2U_SEC_METHODS].offset;
+	meta->methodsSize = (int32_t)s[R2U_SEC_METHODS].size;
+	meta->typeDefinitionsOffset = s[R2U_SEC_TYPE_DEFINITIONS].offset;
+	meta->typeDefinitionsSize = (int32_t)s[R2U_SEC_TYPE_DEFINITIONS].size;
 	if (meta->version == 24 && is_v24_0 (meta)) {
 		R_LOG_ERROR ("v24.0 metadata (Unity 5.6..2018.2) not supported: "
 			"TypeDefinition/MethodDefinition/ImageDefinition row layouts "
@@ -110,6 +288,17 @@ R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf) {
 	meta->string_literals = r_buf_new_slice (buf, meta->stringLiteralOffset, meta->stringLiteralSize);
 	if (g_debug) {
 		fprintf (stderr, "[r2unity] meta version=%d strings=%u@0x%x methods=%d@0x%x types=%d@0x%x\n", meta->version, (unsigned)meta->stringSize, (unsigned)meta->stringOffset, (int)meta->methodsSize, (unsigned)meta->methodsOffset, (int)meta->typeDefinitionsSize, (unsigned)meta->typeDefinitionsOffset);
+		if (version >= 38) {
+			fprintf (stderr, "[r2unity] v38+ counts literals=%u methods=%u types=%u images=%u index_sizes=%d/%d/%d/%d\n",
+				(unsigned)s[R2U_SEC_STRING_LITERALS].count,
+				(unsigned)s[R2U_SEC_METHODS].count,
+				(unsigned)s[R2U_SEC_TYPE_DEFINITIONS].count,
+				(unsigned)s[R2U_SEC_IMAGES].count,
+				meta->typeIndexSize,
+				meta->typeDefinitionIndexSize,
+				meta->genericContainerIndexSize,
+				meta->parameterIndexSize);
+		}
 	}
 	return meta;
 }
@@ -160,31 +349,30 @@ R_API const char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index) {
 R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	if (!meta->string_literals || meta->stringLiteralSize < 8 || (meta->stringLiteralSize % 8) != 0) {
+	const ut64 entry = meta->version >= 38? 4: 8;
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_STRING_LITERALS, entry, count);
+	if (!buf) {
 		return NULL;
 	}
-	*count = (size_t) ((ut64)meta->stringLiteralSize / 8);
 	Il2CppStringLiteral *lits = R_NEWS (Il2CppStringLiteral, *count);
 	if (!lits) {
-		*count = 0;
-		return NULL;
-	}
-	ut8 *buf = R_NEWS (ut8, (ut64)meta->stringLiteralSize);
-	if (!buf) {
-		R_FREE (lits);
-		*count = 0;
-		return NULL;
-	}
-	if (r_buf_read_at (meta->string_literals, 0, buf, (ut64)meta->stringLiteralSize) != (st64)meta->stringLiteralSize) {
 		R_FREE (buf);
-		R_FREE (lits);
 		*count = 0;
 		return NULL;
 	}
 	for (size_t i = 0; i < *count; i++) {
-		const ut8 *p = buf + i * 8;
-		lits[i].length = r_read_le32 (p + 0);
-		lits[i].dataIndex = r_read_le32 (p + 4);
+		const ut8 *p = buf + i * entry;
+		if (meta->version >= 38) {
+			uint32_t data_index = r_read_le32 (p);
+			uint32_t next_index = (i + 1 < *count)
+				? r_read_le32 (p + entry)
+				: (uint32_t)meta->stringLiteralDataSize;
+			lits[i].dataIndex = data_index;
+			lits[i].length = (next_index >= data_index)? next_index - data_index: 0;
+		} else {
+			lits[i].length = r_read_le32 (p);
+			lits[i].dataIndex = r_read_le32 (p + 4);
+		}
 	}
 	R_FREE (buf);
 	return lits;
@@ -216,56 +404,52 @@ R_API bool r2unity_read_string_literal(R2UnityMetadata *meta, const Il2CppString
 
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
-	// On-disk Il2CppTypeDefinition is 88 bytes for v24+ (little-endian)
-	const ut64 entry = 88;
-	ut64 tsize = (ut64) (ut64)meta->typeDefinitionsSize;
-	if (tsize < entry) {
-		*count = 0;
+	const bool compact_indices = (meta->version >= 35);
+	const bool has_element_type = (meta->version <= 31);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const int generic_container_size = compact_indices? meta->genericContainerIndexSize: 4;
+	const ut64 entry = 4 + 4
+		+ type_index_size + type_index_size + type_index_size
+		+ (has_element_type? 4: 0)
+		+ generic_container_size
+		+ 4 + 32 + 16 + 4 + 4;
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_TYPE_DEFINITIONS, entry, count);
+	if (!buf) {
 		return NULL;
 	}
-	*count = (size_t) (tsize / entry);
 	Il2CppTypeDefinition *types = R_NEWS (Il2CppTypeDefinition, *count);
 	if (!types) {
-		return NULL;
-	}
-	ut8 *buf = R_NEWS (ut8, tsize);
-	if (!buf) {
-		R_FREE (types);
-		return NULL;
-	}
-	if (r_buf_read_at (meta->buf, meta->typeDefinitionsOffset, buf, tsize) != (st64)tsize) {
 		R_FREE (buf);
-		R_FREE (types);
 		return NULL;
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf + i * entry;
-		types[i].nameIndex = r_read_le32 (p + 0);
-		types[i].namespaceIndex = r_read_le32 (p + 4);
-		types[i].byvalTypeIndex = (int32_t)r_read_le32 (p + 8);
-		types[i].declaringTypeIndex = (int32_t)r_read_le32 (p + 12);
-		types[i].parentIndex = (int32_t)r_read_le32 (p + 16);
-		types[i].elementTypeIndex = (int32_t)r_read_le32 (p + 20);
-		types[i].genericContainerIndex = (int32_t)r_read_le32 (p + 24);
-		types[i].flags = r_read_le32 (p + 28);
-		types[i].fieldStart = (int32_t)r_read_le32 (p + 32);
-		types[i].methodStart = (int32_t)r_read_le32 (p + 36);
-		types[i].eventStart = (int32_t)r_read_le32 (p + 40);
-		types[i].propertyStart = (int32_t)r_read_le32 (p + 44);
-		types[i].nestedTypesStart = (int32_t)r_read_le32 (p + 48);
-		types[i].interfacesStart = (int32_t)r_read_le32 (p + 52);
-		types[i].vtableStart = (int32_t)r_read_le32 (p + 56);
-		types[i].interfaceOffsetsStart = (int32_t)r_read_le32 (p + 60);
-		types[i].method_count = r_read_le16 (p + 64);
-		types[i].property_count = r_read_le16 (p + 66);
-		types[i].field_count = r_read_le16 (p + 68);
-		types[i].event_count = r_read_le16 (p + 70);
-		types[i].nested_type_count = r_read_le16 (p + 72);
-		types[i].vtable_count = r_read_le16 (p + 74);
-		types[i].interfaces_count = r_read_le16 (p + 76);
-		types[i].interface_offsets_count = r_read_le16 (p + 78);
-		types[i].bitfield = r_read_le32 (p + 80);
-		types[i].token = r_read_le32 (p + 84);
+		types[i].nameIndex = read_u32p (&p);
+		types[i].namespaceIndex = read_u32p (&p);
+		types[i].byvalTypeIndex = read_indexp (&p, type_index_size);
+		types[i].declaringTypeIndex = read_indexp (&p, type_index_size);
+		types[i].parentIndex = read_indexp (&p, type_index_size);
+		types[i].elementTypeIndex = has_element_type? read_i32p (&p): types[i].parentIndex;
+		types[i].genericContainerIndex = read_indexp (&p, generic_container_size);
+		types[i].flags = read_u32p (&p);
+		types[i].fieldStart = read_i32p (&p);
+		types[i].methodStart = read_i32p (&p);
+		types[i].eventStart = read_i32p (&p);
+		types[i].propertyStart = read_i32p (&p);
+		types[i].nestedTypesStart = read_i32p (&p);
+		types[i].interfacesStart = read_i32p (&p);
+		types[i].vtableStart = read_i32p (&p);
+		types[i].interfaceOffsetsStart = read_i32p (&p);
+		types[i].method_count = read_u16p (&p);
+		types[i].property_count = read_u16p (&p);
+		types[i].field_count = read_u16p (&p);
+		types[i].event_count = read_u16p (&p);
+		types[i].nested_type_count = read_u16p (&p);
+		types[i].vtable_count = read_u16p (&p);
+		types[i].interfaces_count = read_u16p (&p);
+		types[i].interface_offsets_count = read_u16p (&p);
+		types[i].bitfield = read_u32p (&p);
+		types[i].token = read_u32p (&p);
 	}
 	R_FREE (buf);
 	return types;
@@ -277,48 +461,47 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *me
 	 *   v24.1 - v30: 32 bytes
 	 *   v31+:        36 bytes (returnParameterToken inserted at +12,
 	 *                          pushing parameterStart.. by +4)
+	 *   v39+:        compact TypeIndex/TypeDefinitionIndex/ParameterIndex
+	 *                fields shrink rows when table counts fit in 16 bits.
 	 * See doc/future.md §4.1 and third_party/Il2CppDumper/.../MetadataClass.cs. */
-	const bool v31_layout = (meta->version >= 31);
-	const ut64 entry = v31_layout? 36: 32;
-	const int off_parameterStart = v31_layout? 16: 12;
-	const int off_genericContainer = v31_layout? 20: 16;
-	const int off_token = v31_layout? 24: 20;
-	const int off_flags = v31_layout? 28: 24;
-	const int off_iflags = v31_layout? 30: 26;
-	const int off_slot = v31_layout? 32: 28;
-	const int off_parameterCount = v31_layout? 34: 30;
+	const bool has_return_parameter = (meta->version >= 31);
+	const bool compact_indices = (meta->version >= 35);
+	const int type_definition_size = compact_indices? meta->typeDefinitionIndexSize: 4;
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const int parameter_index_size = meta->version >= 39? meta->parameterIndexSize: 4;
+	const int generic_container_size = compact_indices? meta->genericContainerIndexSize: 4;
+	const ut64 entry = 4
+		+ type_definition_size
+		+ type_index_size
+		+ (has_return_parameter? 4: 0)
+		+ parameter_index_size
+		+ generic_container_size
+		+ 4 + 2 + 2 + 2 + 2;
 
-	if ((ut64)meta->methodsSize < entry) {
-		*count = 0;
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_METHODS, entry, count);
+	if (!buf) {
 		return NULL;
 	}
-	*count = (ut64)meta->methodsSize / entry;
 	Il2CppMethodDefinition *methods = R_NEWS (Il2CppMethodDefinition, *count);
 	if (!methods) {
-		return NULL;
-	}
-	ut8 *buf = R_NEWS (ut8, (ut64)meta->methodsSize);
-	if (!buf) {
-		R_FREE (methods);
-		return NULL;
-	}
-	if (r_buf_read_at (meta->buf, meta->methodsOffset, buf, (ut64)meta->methodsSize) != (st64)meta->methodsSize) {
 		R_FREE (buf);
-		R_FREE (methods);
 		return NULL;
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf + i * entry;
-		methods[i].nameIndex = r_read_le32 (p + 0);
-		methods[i].declaringType = (int32_t)r_read_le32 (p + 4);
-		methods[i].returnType = (int32_t)r_read_le32 (p + 8);
-		methods[i].parameterStart = (int32_t)r_read_le32 (p + off_parameterStart);
-		methods[i].genericContainerIndex = (int32_t)r_read_le32 (p + off_genericContainer);
-		methods[i].token = r_read_le32 (p + off_token);
-		methods[i].flags = r_read_le16 (p + off_flags);
-		methods[i].iflags = r_read_le16 (p + off_iflags);
-		methods[i].slot = r_read_le16 (p + off_slot);
-		methods[i].parameterCount = r_read_le16 (p + off_parameterCount);
+		methods[i].nameIndex = read_u32p (&p);
+		methods[i].declaringType = read_indexp (&p, type_definition_size);
+		methods[i].returnType = read_indexp (&p, type_index_size);
+		if (has_return_parameter) {
+			p += 4;
+		}
+		methods[i].parameterStart = read_indexp (&p, parameter_index_size);
+		methods[i].genericContainerIndex = read_indexp (&p, generic_container_size);
+		methods[i].token = read_u32p (&p);
+		methods[i].flags = read_u16p (&p);
+		methods[i].iflags = read_u16p (&p);
+		methods[i].slot = read_u16p (&p);
+		methods[i].parameterCount = read_u16p (&p);
 	}
 	R_FREE (buf);
 	return methods;
@@ -327,55 +510,41 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *me
 R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	/* Common-field offsets are identical across v24/v27/v29 headers. */
-	ut64 ioff = meta->header.v24.imagesOffset;
-	ut64 isize = meta->header.v24.imagesSize;
-	if (!isize) {
-		return NULL;
-	}
-	// We parse a minimal 40-byte structure per entry
-	const ut64 entry = 40;
-	*count = (size_t) (isize / entry);
-	if (!*count) {
+	const bool compact_indices = (meta->version >= 35);
+	const int type_definition_size = compact_indices? meta->typeDefinitionIndexSize: 4;
+	const ut64 entry = 4 + 4 + type_definition_size + 4
+		+ type_definition_size + 4 + 4 + 4 + 4 + 4;
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_IMAGES, entry, count);
+	if (!buf) {
 		return NULL;
 	}
 	Il2CppImageDefinition *imgs = R_NEWS (Il2CppImageDefinition, *count);
 	if (!imgs) {
-		return NULL;
-	}
-	ut8 *buf2 = R_NEWS (ut8, isize);
-	if (!buf2) {
-		R_FREE (imgs);
-		return NULL;
-	}
-	if (r_buf_read_at (meta->buf, ioff, buf2, isize) != (st64)isize) {
-		R_FREE (buf2);
-		R_FREE (imgs);
+		R_FREE (buf);
 		return NULL;
 	}
 	for (size_t i = 0; i < *count; i++) {
-		const ut8 *p = buf2 + i * entry;
-		imgs[i].nameIndex = r_read_le32 (p + 0);
-		imgs[i].assemblyIndex = (int32_t)r_read_le32 (p + 4);
-		imgs[i].typeStart = (int32_t)r_read_le32 (p + 8);
-		imgs[i].typeCount = r_read_le32 (p + 12);
-		imgs[i].exportedTypeStart = (int32_t)r_read_le32 (p + 16);
-		imgs[i].exportedTypeCount = r_read_le32 (p + 20);
-		imgs[i].entryPointIndex = (int32_t)r_read_le32 (p + 24);
-		imgs[i].token = r_read_le32 (p + 28);
-		imgs[i].customAttributeStart = (int32_t)r_read_le32 (p + 32);
-		imgs[i].customAttributeCount = r_read_le32 (p + 36);
+		const ut8 *p = buf + i * entry;
+		imgs[i].nameIndex = read_u32p (&p);
+		imgs[i].assemblyIndex = read_i32p (&p);
+		imgs[i].typeStart = read_indexp (&p, type_definition_size);
+		imgs[i].typeCount = read_u32p (&p);
+		imgs[i].exportedTypeStart = read_indexp (&p, type_definition_size);
+		imgs[i].exportedTypeCount = read_u32p (&p);
+		imgs[i].entryPointIndex = read_i32p (&p);
+		imgs[i].token = read_u32p (&p);
+		imgs[i].customAttributeStart = read_i32p (&p);
+		imgs[i].customAttributeCount = read_u32p (&p);
 	}
-	R_FREE (buf2);
+	R_FREE (buf);
 	return imgs;
 }
 
 R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	/* Common-field offsets are identical across v24/v27/v29 headers. */
-	ut64 aoff = meta->header.v24.assembliesOffset;
-	ut64 asize = meta->header.v24.assembliesSize;
+	Il2CppMetadataSection sec = meta->sections[R2U_SEC_ASSEMBLIES];
+	ut64 asize = sec.size;
 	if (!asize) {
 		return NULL;
 	}
@@ -402,15 +571,16 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, si
 	/* Within a row:
 	 *   [0..4)    imageIndex
 	 *   [4..8)    token (wire >= 24.1) OR customAttributeIndex (wire <= 24.0)
-	 *   [8..12)   referencedAssemblyStart (wire >= 20)
-	 *   [12..16)  referencedAssemblyCount
-	 *   [16..entry) Il2CppAssemblyNameDefinition
+	 *   [8..12)   moduleToken (wire >= 38 only)
+	 *   [8/12..)  referencedAssemblyStart / Count
+	 *   [16/20..entry) Il2CppAssemblyNameDefinition
 	 * aname size is (entry - 16): 48 when hashValueIndex dropped (>=24.4),
 	 * 52 when it is still present (<=24.3). Layout within aname:
 	 *   nameIndex, cultureIndex, [hashValueIndex if 52], publicKeyIndex,
 	 *   hash_alg, hash_len, flags, major, minor, build, revision,
 	 *   public_key_token[8]. */
-	const ut64 aname_size = entry - 16;
+	const ut64 aname_offset = meta->version >= 38? 20: 16;
+	const ut64 aname_size = entry - aname_offset;
 	bool has_hash_value = (aname_size == 52);
 	if (aname_size != 48 && aname_size != 52) {
 		R_LOG_WARN ("unexpected aname size %" PFMT64u, aname_size);
@@ -426,7 +596,7 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, si
 		R_FREE (out);
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, aoff, buf, asize) != (st64)asize) {
+	if (r_buf_read_at (meta->buf, sec.offset, buf, asize) != (st64)asize) {
 		R_FREE (buf);
 		R_FREE (out);
 		return NULL;
@@ -435,9 +605,14 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, si
 		const ut8 *p = buf + i * entry;
 		out[i].image_index = (int32_t)r_read_le32 (p + 0);
 		out[i].token = (meta->version >= 24)? r_read_le32 (p + 4): 0;
-		out[i].referenced_start = (int32_t)r_read_le32 (p + 8);
-		out[i].referenced_count = (int32_t)r_read_le32 (p + 12);
-		const ut8 *an = p + 16;
+		if (meta->version >= 38) {
+			out[i].referenced_start = (int32_t)r_read_le32 (p + 12);
+			out[i].referenced_count = (int32_t)r_read_le32 (p + 16);
+		} else {
+			out[i].referenced_start = (int32_t)r_read_le32 (p + 8);
+			out[i].referenced_count = (int32_t)r_read_le32 (p + 12);
+		}
+		const ut8 *an = p + aname_offset;
 		out[i].aname.name_idx = r_read_le32 (an + 0);
 		out[i].aname.culture_idx = r_read_le32 (an + 4);
 		ut64 o;
@@ -473,8 +648,8 @@ R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, si
 R_API int32_t *r2unity_get_referenced_assemblies(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	ut64 roff = meta->header.v24.referencedAssembliesOffset;
-	ut64 rsize = meta->header.v24.referencedAssembliesSize;
+	Il2CppMetadataSection sec = meta->sections[R2U_SEC_REFERENCED_ASSEMBLIES];
+	ut64 rsize = sec.size;
 	if (rsize < 4 || (rsize % 4) != 0) {
 		return NULL;
 	}
@@ -490,7 +665,7 @@ R_API int32_t *r2unity_get_referenced_assemblies(R2UnityMetadata *meta, size_t *
 		*count = 0;
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, roff, buf, rsize) != (st64)rsize) {
+	if (r_buf_read_at (meta->buf, sec.offset, buf, rsize) != (st64)rsize) {
 		R_FREE (buf);
 		R_FREE (out);
 		*count = 0;
@@ -677,14 +852,9 @@ static R2UAttrRange *load_attribute_ranges(R2UnityMetadata *meta, size_t *count,
 	if (meta->version < 29) {
 		return NULL;
 	}
-	/* v29+ repurposes the v27-era fields at this position:
-	 *   attributesInfoOffset/Size  -> attributeDataOffset/Size
-	 *   attributeTypesOffset/Size  -> attributeDataRangeOffset/Size
-	 * The byte positions are identical; only the semantics changed. */
-	ut64 data_off = meta->header.v29.attributesInfoOffset;
-	ut64 data_size = meta->header.v29.attributesInfoSize;
-	ut64 range_off = meta->header.v29.attributeTypesOffset;
-	ut64 range_size = meta->header.v29.attributeTypesSize;
+	Il2CppMetadataSection data = meta->sections[R2U_SEC_ATTRIBUTE_DATA];
+	Il2CppMetadataSection range = meta->sections[R2U_SEC_ATTRIBUTE_DATA_RANGES];
+	ut64 range_size = range.size;
 	if (!range_size || (range_size % 8) != 0) {
 		return NULL;
 	}
@@ -698,7 +868,7 @@ static R2UAttrRange *load_attribute_ranges(R2UnityMetadata *meta, size_t *count,
 		R_FREE (ranges);
 		return NULL;
 	}
-	if (r_buf_read_at (meta->buf, range_off, buf, range_size) != (st64)range_size) {
+	if (r_buf_read_at (meta->buf, range.offset, buf, range_size) != (st64)range_size) {
 		R_FREE (buf);
 		R_FREE (ranges);
 		return NULL;
@@ -709,8 +879,8 @@ static R2UAttrRange *load_attribute_ranges(R2UnityMetadata *meta, size_t *count,
 	}
 	R_FREE (buf);
 	*count = n;
-	*out_data_off = data_off;
-	*out_data_size = data_size;
+	*out_data_off = data.offset;
+	*out_data_size = data.size;
 	return ranges;
 }
 
