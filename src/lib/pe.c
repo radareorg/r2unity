@@ -2,6 +2,7 @@
 // PE .dll images are already relocated at link time (preferred image base is
 // concrete), so no relocation fixup is required — pointers in .data / .rdata
 // are absolute VAs relative to the ImageBase.
+#define R_LOG_ORIGIN "r2unity.pe"
 #include "lib.h"
 #include <string.h>
 
@@ -244,9 +245,7 @@ R_API bool r2unity_find_method_pointers_pe(R2UnityMetadata *meta, const char *pe
 				ut32 min_seen = (pass == 0)? 8: sample / 2;
 				ut32 min_good = (pass == 0)? 8: (sample * 3) / 4;
 				if (pe_probe_table (&pe, arrptr, cnt, ptrsz, text_lo, text_hi, min_seen, min_good, method_count, candidates)) {
-					if (r2unity_is_debug ()) {
-						fprintf (stderr, "[r2unity/pe] pass=%d arrptr=0x%" PFMT64x " cnt=%u\n", pass, arrptr, cnt);
-					}
+					R_LOG_DEBUG ("[pe] pass=%d arrptr=0x%" PFMT64x " cnt=%u", pass, arrptr, cnt);
 					found = true;
 					break;
 				}

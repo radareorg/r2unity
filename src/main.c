@@ -238,8 +238,8 @@ static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *me
 	fprintf (f, "  \"components\": [\n");
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = (char *)r2unity_get_string (meta, a->aname.culture_idx);
+		char *name = r2unity_get_string (meta, a->aname.name_idx);
+		char *culture = r2unity_get_string (meta, a->aname.culture_idx);
 		const char *nm = name? name: "";
 		const char *cl = (culture && *culture)? culture: "neutral";
 
@@ -247,7 +247,7 @@ static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *me
 		const char *img = "";
 		char *img_name_owned = NULL;
 		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
-			img_name_owned = (char *)r2unity_get_string (meta, imgs[a->image_index].nameIndex);
+			img_name_owned = r2unity_get_string (meta, imgs[a->image_index].nameIndex);
 			if (img_name_owned) {
 				img = img_name_owned;
 			}
@@ -317,7 +317,7 @@ static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *me
 		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
 			continue;
 		}
-		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		char *name = r2unity_get_string (meta, a->aname.name_idx);
 		const char *nm = name? name: "";
 		if (!first_dep) {
 			fprintf (f, ",\n");
@@ -333,7 +333,7 @@ static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *me
 				continue;
 			}
 			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = (char *)r2unity_get_string (meta, r->aname.name_idx);
+			char *rname = r2unity_get_string (meta, r->aname.name_idx);
 			if (!first_ref) {
 				fprintf (f, ",");
 			}
@@ -615,12 +615,12 @@ static bool emit_r2_method(R2UnityMetadata *meta,
 	if (addr <= 0x1000) {
 		return false;
 	}
-	char *mn = (char *)r2unity_get_string (meta, m->nameIndex);
+	char *mn = r2unity_get_string (meta, m->nameIndex);
 	if (!mn) {
 		return false;
 	}
-	char *ns = td? (char *)r2unity_get_string (meta, td->namespaceIndex): NULL;
-	char *tn = td? (char *)r2unity_get_string (meta, td->nameIndex): NULL;
+	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
+	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
 	char fullname[1024];
 	unsigned pc = (unsigned)m->parameterCount;
 	if (ns && *ns) {
@@ -640,7 +640,7 @@ static bool emit_r2_method(R2UnityMetadata *meta,
 	}
 	r_name_filter (fullname, -1);
 	char *attrs = method_attrs (m->flags);
-	char *im = img? (char *)r2unity_get_string (meta, img->nameIndex): NULL;
+	char *im = img? r2unity_get_string (meta, img->nameIndex): NULL;
 	if (im && *im) {
 		printf ("'@0x%" PFMT64x "'f sym.unity.%s.%s\n", addr, im, fullname);
 		printf ("'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n",
@@ -746,8 +746,9 @@ int main(int argc, char *argv[]) {
 		return 1;
 	}
 
-	/* configure debug */
-	r2unity_set_debug (debug);
+	if (debug) {
+		r_log_set_level (R_LOG_LEVEL_DEBUG);
+	}
 	R2UnityMetadata *meta = r2unity_parse_metadata (buf);
 	if (!meta) {
 		R_LOG_ERROR ("Failed to parse metadata");
@@ -793,7 +794,8 @@ int main(int argc, char *argv[]) {
 	ut64 *method_ptrs = NULL;
 	bool has_ptrs = false;
 	if (gmp_addr) {
-		has_ptrs = r2unity_read_method_pointers_at (meta, exe_path, gmp_addr, gmp_count, &method_ptrs);
+		R_LOG_WARN ("Manual method-pointer table reading (-a/-c) is not implemented");
+		(void)gmp_count;
 	} else if (fast) {
 		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
 	}

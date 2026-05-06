@@ -1,6 +1,15 @@
 // Fast ELF parser for r2unity
+#define R_LOG_ORIGIN "r2unity.elf"
 #include "lib.h"
 #include <string.h>
+
+static inline void elf_write_word(ut8 *loc, ut64 val, bool is64) {
+	if (is64) {
+		r_write_le64 (loc, val);
+	} else {
+		r_write_le32 (loc, (ut32)val);
+	}
+}
 
 typedef struct {
 	ut64 vaddr;
@@ -242,6 +251,8 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 			}
 		}
 	}
+	const ut64 base = (base_vaddr != UT64_MAX)? base_vaddr: 0;
+	const ut64 type_mask = e.is64? 0xffffffffULL: 0xffULL;
 	if (rela_off && rela_sz && rela_ent) {
 		for (ut64 i = 0; i + rela_ent <= rela_sz; i += rela_ent) {
 			const ut8 *rp = elf_vm_to_ptr (&e, rela_off + i);
@@ -251,26 +262,14 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 			ut64 r_offset = e.is64? r_read_le64 (rp + 0): (ut64)r_read_le32 (rp + 0);
 			ut64 r_info = e.is64? r_read_le64 (rp + 8): (ut64)r_read_le32 (rp + 4);
 			ut64 r_addend = e.is64? r_read_le64 (rp + 16): (ut64)r_read_le32 (rp + 8);
-			ut64 type = e.is64? (r_info & 0xffffffffULL): (r_info & 0xffULL);
+			ut64 type = r_info & type_mask;
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) {
 				continue;
 			}
 			ut8 *loc = (ut8 *)elf_vm_to_ptr (&e, r_offset);
-			if (!loc) {
-				continue;
-			}
-			// For RELATIVE, new value should be base + addend
-			ut64 newv = base_vaddr != UT64_MAX? (base_vaddr + r_addend): r_addend;
-			if (e.is64) {
-				for (int b = 0; b < 8; b++) {
-					loc[b] = (ut8) ((newv >> (8 * b)) & 0xff);
-				}
-			} else {
-				ut32 v32 = (ut32)newv;
-				for (int b = 0; b < 4; b++) {
-					loc[b] = (ut8) ((v32 >> (8 * b)) & 0xff);
-				}
+			if (loc) {
+				elf_write_word (loc, base + r_addend, e.is64);
 			}
 		}
 	}
@@ -282,7 +281,7 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 			}
 			ut64 r_offset = e.is64? r_read_le64 (rp + 0): (ut64)r_read_le32 (rp + 0);
 			ut64 r_info = e.is64? r_read_le64 (rp + 8): (ut64)r_read_le32 (rp + 4);
-			ut64 type = e.is64? (r_info & 0xffffffffULL): (r_info & 0xffULL);
+			ut64 type = r_info & type_mask;
 			bool is_relative = (type == 8) || (type == 23) || (type == 1027);
 			if (!is_relative) {
 				continue;
@@ -292,18 +291,7 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 				continue;
 			}
 			ut64 add = e.is64? r_read_le64 (loc): (ut64)r_read_le32 (loc);
-			// REL: add base to current value
-			ut64 newv = base_vaddr != UT64_MAX? (base_vaddr + add): add;
-			if (e.is64) {
-				for (int b = 0; b < 8; b++) {
-					loc[b] = (ut8) ((newv >> (8 * b)) & 0xff);
-				}
-			} else {
-				ut32 v32 = (ut32)newv;
-				for (int b = 0; b < 4; b++) {
-					loc[b] = (ut8) ((v32 >> (8 * b)) & 0xff);
-				}
-			}
+			elf_write_word (loc, base + add, e.is64);
 		}
 	}
 	if (e.is64 && relr_off && relr_sz && relr_ent) {
@@ -318,27 +306,19 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 				ut64 addr = R;
 				ut8 *loc = (ut8 *)elf_vm_to_ptr (&e, addr);
 				if (loc) {
-					ut64 add = r_read_le64 (loc);
-					ut64 newv = base_vaddr != UT64_MAX? (base_vaddr + add): add;
-					for (int b = 0; b < 8; b++) {
-						loc[b] = (ut8) ((newv >> (8 * b)) & 0xff);
-					}
+					elf_write_word (loc, base + r_read_le64 (loc), true);
 				}
 				curr = addr + 8;
 			} else {
 				ut64 bitmap = R >> 1;
 				for (int bit = 0; bit < 63; bit++) {
-					if (bitmap & (1ULL << bit)) {
-						ut64 addr = curr + (ut64) (bit + 1) * 8ULL;
-						ut8 *loc = (ut8 *)elf_vm_to_ptr (&e, addr);
-						if (!loc) {
-							continue;
-						}
-						ut64 add = r_read_le64 (loc);
-						ut64 newv = base_vaddr != UT64_MAX? (base_vaddr + add): add;
-						for (int b = 0; b < 8; b++) {
-							loc[b] = (ut8) ((newv >> (8 * b)) & 0xff);
-						}
+					if (! (bitmap & (1ULL << bit))) {
+						continue;
+					}
+					ut64 addr = curr + (ut64) (bit + 1) * 8ULL;
+					ut8 *loc = (ut8 *)elf_vm_to_ptr (&e, addr);
+					if (loc) {
+						elf_write_word (loc, base + r_read_le64 (loc), true);
 					}
 				}
 				curr += 8ULL * 63ULL;
@@ -389,9 +369,7 @@ R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *e
 				ut32 min_seen = (pass == 0)? 8: sample / 2;
 				ut32 min_good = (pass == 0)? 8: (sample * 3) / 4;
 				if (elf_probe_table (&e, arrptr, cnt, ptrsz, base_vaddr, text_lo, text_hi, min_seen, min_good, method_count, candidates)) {
-					if (r2unity_is_debug ()) {
-						fprintf (stderr, "[r2unity/elf] pass=%d arrptr=0x%" PFMT64x " cnt=%u\n", pass, arrptr, cnt);
-					}
+					R_LOG_DEBUG ("[elf] pass=%d arrptr=0x%" PFMT64x " cnt=%u", pass, arrptr, cnt);
 					found = true;
 					break;
 				}

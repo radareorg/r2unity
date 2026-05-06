@@ -1,4 +1,5 @@
 // Fast Mach-O parser for r2unity
+#define R_LOG_ORIGIN "r2unity.macho"
 #include "lib.h"
 #include <string.h>
 
@@ -232,9 +233,7 @@ R_API bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char 
 				ut32 min_seen = (pass == 0)? 8: sample / 2;
 				ut32 min_good = (pass == 0)? 8: (sample * 3) / 4;
 				if (macho_probe_table (&mo, arrptr, cnt, text_lo, text_hi, min_seen, min_good, method_count, candidates)) {
-					if (r2unity_is_debug ()) {
-						fprintf (stderr, "[r2unity/macho] pass=%d arrptr=0x%" PFMT64x " cnt=%u\n", pass, arrptr, cnt);
-					}
+					R_LOG_DEBUG ("[macho] pass=%d arrptr=0x%" PFMT64x " cnt=%u", pass, arrptr, cnt);
 					found = true;
 					break;
 				}

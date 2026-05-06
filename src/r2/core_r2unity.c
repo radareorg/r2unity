@@ -285,12 +285,12 @@ static bool find_method_pointers(R2UnityMetadata *meta, const char *path, ut64 *
 static char *build_method_fullname(R2UnityMetadata *meta,
 	const Il2CppMethodDefinition *m,
 	const Il2CppTypeDefinition *td) {
-	char *mn = (char *)r2unity_get_string (meta, m->nameIndex);
+	char *mn = r2unity_get_string (meta, m->nameIndex);
 	if (!mn) {
 		return NULL;
 	}
-	char *ns = td? (char *)r2unity_get_string (meta, td->namespaceIndex): NULL;
-	char *tn = td? (char *)r2unity_get_string (meta, td->nameIndex): NULL;
+	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
+	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
 	unsigned pc = (unsigned)m->parameterCount;
 	char *out = NULL;
 	if (ns && *ns) {
@@ -381,7 +381,7 @@ static int cmd_symbols(RCore *core, char mode) {
 		if (!fullname) {
 			continue;
 		}
-		char *imgname = img? (char *)r2unity_get_string (meta, img->nameIndex): NULL;
+		char *imgname = img? r2unity_get_string (meta, img->nameIndex): NULL;
 		char flag_buf[1024];
 		if (imgname && *imgname) {
 			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s.%s", imgname, fullname);
@@ -716,14 +716,14 @@ static int cmd_sbom(RCore *core) {
 	pj_ka (pj, "components");
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = (char *)r2unity_get_string (meta, a->aname.culture_idx);
+		char *name = r2unity_get_string (meta, a->aname.name_idx);
+		char *culture = r2unity_get_string (meta, a->aname.culture_idx);
 		const char *nm = name? name: "";
 		const char *cl = (culture && *culture)? culture: "neutral";
 		char *img_name_owned = NULL;
 		const char *img = "";
 		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
-			img_name_owned = (char *)r2unity_get_string (meta, imgs[a->image_index].nameIndex);
+			img_name_owned = r2unity_get_string (meta, imgs[a->image_index].nameIndex);
 			if (img_name_owned) {
 				img = img_name_owned;
 			}
@@ -767,7 +767,7 @@ static int cmd_sbom(RCore *core) {
 		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
 			continue;
 		}
-		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		char *name = r2unity_get_string (meta, a->aname.name_idx);
 		const char *nm = name? name: "";
 		char ver[64];
 		snprintf (ver, sizeof (ver), "%d.%d.%d.%d", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
@@ -782,7 +782,7 @@ static int cmd_sbom(RCore *core) {
 				continue;
 			}
 			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = (char *)r2unity_get_string (meta, r->aname.name_idx);
+			char *rname = r2unity_get_string (meta, r->aname.name_idx);
 			char rver[64];
 			snprintf (rver, sizeof (rver), "%d.%d.%d.%d", r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
 			char rref[512];
