@@ -169,7 +169,7 @@ addressed differently:
 	`stringLiteralDataOffset .. +stringLiteralDataSize`, indexed by
 	rows in `stringLiteralOffset .. +stringLiteralSize`. Up through
 	v31, each row is `{uint32_t length, uint32_t dataIndex}`. On
-	v38+, rows store only `dataIndex`; the length is inferred from
+	v32+, rows store only `dataIndex`; the length is inferred from
 	the next row's `dataIndex`, or from `stringLiteralDataSize` for
 	the last row. These are ECMA-335 `ldstr` constants (§III.4.16).
 	They can contain embedded NULs, raw UTF-16 payloads, or arbitrary
@@ -207,6 +207,11 @@ For v38/v39 support, r2unity currently derives:
 - `GenericContainerIndex` width from `genericContainers.count`.
 - `ParameterIndex` width from `parameters.count` on v39+; older
 	accepted metadata keeps this as 32-bit.
+
+Il2CppDumper's v39 reader has compact-index read paths from v35, but
+its metadata loader initializes those widths to 4 bytes until v38
+section counts are available. Practically, v32..v35 keep 32-bit
+indices in the current reference source.
 
 #### ECMA-335 metadata tokens
 
@@ -249,10 +254,10 @@ v24.0 still carried inline `customAttributeIndex` before token-based
 lookup took over at v24.1.
 
 On v32+ metadata, `elementTypeIndex` is no longer serialized in this
-row. On v35+/v38+ style metadata, the type-like indices inside the
-row use compact 1/2/4-byte serialized widths. r2unity decodes those
-rows into the stable public `Il2CppTypeDefinition` shape; the
-removed `elementTypeIndex` currently falls back to `parentIndex`.
+row. On v38+ metadata, the type-like indices inside the row can use
+compact 1/2/4-byte serialized widths. r2unity decodes those rows into
+the stable public `Il2CppTypeDefinition` shape; the removed
+`elementTypeIndex` currently falls back to `parentIndex`.
 
 Fields (v24.1+):
 
@@ -315,7 +320,9 @@ row, aligning IL2CPP with ECMA-335's treatment of return-type
 custom attributes (§II.22.33: the `Param` table row with `Sequence =
 0` represents the return value).
 
-On v35+ metadata, `declaringType`, `returnType`, and
+Il2CppDumper's compact-index readers are wired from v35, but current
+v39 sources keep those widths at 4 bytes until v38 section counts
+exist. On v38+ metadata, `declaringType`, `returnType`, and
 `genericContainerIndex` can be compact serialized indices. On v39+,
 `parameterStart` can also be compact. The public struct still exposes
 the decoded values as signed 32-bit integers.
@@ -425,7 +432,7 @@ Not exposed by r2unity today.
 One image per managed PE assembly; one assembly per image in every
 wire version r2unity currently targets. Images are 40 B (v24.1+)
 before compact-index shrinkage, 36 B (v24.0), 28 B (v19..v23), and
-24 B (pre-v18). On v35+/v38+ metadata, `typeStart` and
+24 B (pre-v18). On v38+ metadata, `typeStart` and
 `exportedTypeStart` can use compact `TypeDefinitionIndex` widths.
 
 ```c
@@ -972,15 +979,20 @@ Unity-release → wire-version → sub-version mapping.
 - **v31** (Unity 2023.1..2023.x): adds `returnParameterToken` to
 	`Il2CppMethodDefinition`, aligning with ECMA-335's return-value
 	param-row model.
+- **v32..v35** (gap range in current references): keep the legacy
+	offset/size header. v32 removes `Il2CppStringLiteral.length` and
+	`Il2CppTypeDefinition.elementTypeIndex`; v35 introduces compact-
+	index reader hooks but keeps 4-byte widths in the current
+	Il2CppDumper source.
+- **v36..v37**: no header layout is declared by the v39 reference;
 - **v38** (Unity 6 era): switches the header from offset/size pairs
-	to 31 `{offset,size,count}` section records and changes string
-	literal rows to `dataIndex`-only.
+	to 31 `{offset,size,count}` section records.
 	and compacts additional serialized indices, including
 	`ParameterIndex`.
 
 r2unity's current shipped-version acceptance band is **v24.1..v31**
-plus **v38..v39**. It also accepts unobserved v32..v35 as
-v29/v31-shaped metadata, because the known compact-index annotations
+plus **v38..v39**. It also accepts unobserved v32..v35 with the
+legacy offset/size header, the v32 row deltas above, and 4-byte
 header shape. Since the on-disk `version` field is `24` for both
 v24.0 and v24.1+, the parser probes the image-row stride (32 B on
 v24.0, 40 B on v24.1+) and rejects v24.0 explicitly to avoid silent
@@ -1131,6 +1143,10 @@ Primary references used by r2unity's decoders:
 - Il2CppDumper v39 metadata structs used for the v38/v39 layout
 	update:
 	<https://raw.githubusercontent.com/roytu/Il2CppDumper/v39/Il2CppDumper/Il2Cpp/MetadataClass.cs>
+- Local Unity 6000.4.5f1 IL2CPP runtime sources:
+	`/Applications/Unity/Hub/Editor/6000.4.5f1/Unity.app/Contents/Resources/Scripting/il2cpp/libil2cpp/vm/GlobalMetadataFileInternals.h`,
+	`MetadataDeserialization.h`, `MetadataDeserialization.cpp`, and
+	`GlobalMetadata.cpp`.
 - djkaty/Il2CppInspector (alternative C# reference + Unity
 	version matrix)
 	<https://github.com/djkaty/Il2CppInspector>

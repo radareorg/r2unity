@@ -349,7 +349,8 @@ R_API const char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index) {
 R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
-	const ut64 entry = meta->version >= 38? 4: 8;
+	const bool has_literal_length = meta->version <= 31;
+	const ut64 entry = has_literal_length? 8: 4;
 	ut8 *buf = read_metadata_table (meta, R2U_SEC_STRING_LITERALS, entry, count);
 	if (!buf) {
 		return NULL;
@@ -362,16 +363,16 @@ R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, si
 	}
 	for (size_t i = 0; i < *count; i++) {
 		const ut8 *p = buf + i * entry;
-		if (meta->version >= 38) {
+		if (has_literal_length) {
+			lits[i].length = r_read_le32 (p);
+			lits[i].dataIndex = r_read_le32 (p + 4);
+		} else {
 			uint32_t data_index = r_read_le32 (p);
 			uint32_t next_index = (i + 1 < *count)
 				? r_read_le32 (p + entry)
 				: (uint32_t)meta->stringLiteralDataSize;
 			lits[i].dataIndex = data_index;
 			lits[i].length = (next_index >= data_index)? next_index - data_index: 0;
-		} else {
-			lits[i].length = r_read_le32 (p);
-			lits[i].dataIndex = r_read_le32 (p + 4);
 		}
 	}
 	R_FREE (buf);

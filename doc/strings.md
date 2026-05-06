@@ -81,9 +81,7 @@ in the build. The payload for literal `i` lives at bytes
 `stringLiteralDataOffset + row[i].dataIndex ..
  + row[i].dataIndex + row[i].length`, and is *not* NUL-terminated.
 
-On v38+ metadata, the string-literal section is described by an
-`Il2CppMetadataSection` with an explicit `count`, and each row stores
-only:
+On v32+ metadata, each row stores only:
 
 ```c
 uint32_t dataIndex;       /* offset into the payload area */
@@ -91,8 +89,9 @@ uint32_t dataIndex;       /* offset into the payload area */
 
 The payload length is inferred from `row[i + 1].dataIndex -
 row[i].dataIndex`; the last row runs to `stringLiteralDataSize`.
-This is why v38+ literal decoding must use the section count instead
-of `stringLiteralSize / 8`.
+On v32..v35 the row count is `stringLiteralSize / 4`; on v38+ the
+same row shape is described by an `Il2CppMetadataSection` with an
+explicit `count`.
 
 ### 1.3 Why two regions
 
@@ -178,8 +177,8 @@ This keeps output terminal-safe and deterministic across locales.
 ### 4.1 API path
 
 - `r2unity_get_string_literals(meta, &count)` — decodes legacy
-	8-byte rows or v38+ 4-byte `dataIndex` rows into an
-	`Il2CppStringLiteral *` array. On v38+ the length is synthesized
+	8-byte rows or v32+ 4-byte `dataIndex` rows into an
+	`Il2CppStringLiteral *` array. On v32+ the length is synthesized
 	from neighbouring indices.
 - `r2unity_read_string_literal(meta, &row, &out_bytes, &out_len)` —
 	bounds-checks the row against `stringLiteralDataSize` and

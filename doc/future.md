@@ -74,18 +74,20 @@ leak into the `.dat`:
 - Attribute tables (`attributesInfo` + `attributeTypes`) are
 	replaced by a BLOB layout (`attributeDataRange` + `attributeData`)
 	at **v29**. Same header slots, entirely new semantics.
-- The header switches from `{offset,size}` pairs to 31
-	`{offset,size,count}` section records at **v38**.
-- `Il2CppStringLiteral` drops its `length` field at **v38**. Rows
+- `Il2CppStringLiteral` drops its `length` field at **v32**. Rows
 	are `dataIndex` only; length is inferred from the next row or the
 	end of the string-literal data section.
-- `TypeIndex`, `TypeDefinitionIndex`, and `GenericContainerIndex`
-	are compact serialized custom index types on newer metadata. The
-	serialized width is 1, 2, or 4 bytes, selected from the referenced
-	table's row count.
-- `ParameterIndex` becomes compact at **v39**.
 - `Il2CppTypeDefinition.elementTypeIndex` is no longer serialized
-	on v32+ metadata.
+	at **v32**.
+- `TypeIndex`, `TypeDefinitionIndex`, and `GenericContainerIndex`
+	use compact reader hooks from **v35**, but the current v39
+	Il2CppDumper source initializes their widths to 4 bytes before
+	v38 because legacy headers have no section counts.
+- The header switches from `{offset,size}` pairs to 31
+	`{offset,size,count}` section records at **v38**.
+- Starting at **v38**, the compact index widths are inferred from
+	section counts and may be 1, 2, or 4 bytes.
+- `ParameterIndex` becomes compact at **v39**.
 - `Il2CppAssemblyDefinition` gains `moduleToken` at **v38**, moving
 	the embedded `Il2CppAssemblyNameDefinition` tail from offset 16
 	to offset 20.
@@ -114,7 +116,8 @@ is the fractional binary-side refinement.
 | 2022.1                   | 29           | 29          | Inline custom-attribute BLOB; `customAttributeGenerators` removed.     |
 | 2022.2 – 2022.3          | 29           | 29.1        | `unresolvedVirtualCallPointers` splits into instance + static arrays.  |
 | 2023.1 – 2023.x          | 31           | 31          | `Il2CppMethodDefinition` adds `returnParameterToken`.                  |
-| 6000.x (Unity 6 era)     | 38           | 38          | Section header triples; string-literal rows become `dataIndex` only.   |
+| Unsupported gap           | 36 – 37      | 36 – 37     | No header layout declared by the v39 reference source.                 |
+| 6000.x (Unity 6 era)     | 38           | 38          | Section header triples; compact index widths inferred from counts.     |
 
 Il2CppDumper's bundled README claims "Unity 5.3 – 2022.2", i.e.
 wire versions 21–29. Support for wire v31 (Unity 2023+) is present
@@ -722,7 +725,9 @@ and code scanning.
 			`rgctxStartIndex`, `rgctxCount`).
 		- v24.1 – v30: 32 B.
 		- v31+: 36 B (`returnParameterToken` added).
-		- v35+/v38+: `declaringType`, `returnType`, and
+		- v35..v37: compact reader hooks exist, but current reference
+			initializes the widths to 4 bytes before v38.
+		- v38+: `declaringType`, `returnType`, and
 			`genericContainerIndex` may shrink to 1/2/4-byte compact
 			indices.
 		- v39+: `parameterStart` may also shrink to a compact
@@ -733,7 +738,7 @@ and code scanning.
 		- v24 – v24.0: 36 B (adds exported-type range).
 		- v24.1+: 40 B before compact-index shrinkage (adds
 			`customAttribute` range).
-		- v35+/v38+: `typeStart` and `exportedTypeStart` may shrink
+		- v38+: `typeStart` and `exportedTypeStart` may shrink
 			to compact `TypeDefinitionIndex` fields.
 	- `Il2CppTypeDefinition`:
 		- pre-v24: extra legacy fields
@@ -744,7 +749,7 @@ and code scanning.
 			`rgctxStartIndex` + `rgctxCount`.
 		- v24.1+: 88 B before compact-index shrinkage.
 		- v32+: `elementTypeIndex` is no longer serialized.
-		- v35+/v38+: type-like indices may shrink to compact
+		- v38+: type-like indices may shrink to compact
 			serialized widths.
 
 	Always source the size from
@@ -823,6 +828,20 @@ Ordered by RE value vs. implementation effort:
 
 - v39 is confirmed by the local Unity 6 reproducer. v38 support is
 	based on the current Il2CppDumper v39 source layout; keep it
+- The local Unity install at
+	`/Applications/Unity/Hub/Editor/6000.4.5f1` ships IL2CPP sources
+	that assert `s_GlobalMetadataHeader->version == 39` in
+	`libil2cpp/vm/GlobalMetadata.cpp`. Its
+	`GlobalMetadataFileInternals.h` and `MetadataDeserialization.*`
+	files confirm the v39 runtime shape: no `elementTypeIndex`,
+	`Il2CppStringLiteral` is `dataIndex` only, `moduleToken` is
+	present on assemblies, and compact index widths are read from
+	metadata counts.
+- Public Unity release notes and documentation searched for
+	2023.3/6000.x do not document the private
+	`global-metadata.dat` wire format. The useful public source for
+	the v32..v39 gap is still Il2CppDumper v39's annotated
+	`MetadataClass.cs`, plus the local Unity runtime sources above.
 - Il2CppDumper's bundled snapshot is what drives these layout
 	tables; newer Unity releases may introduce another whole wire
 	version or sub-version that won't be caught until the vendored
