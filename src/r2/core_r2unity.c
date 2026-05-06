@@ -4,9 +4,23 @@
 #include <r_lib.h>
 #include "../lib/lib.h"
 
+// clang-format off
 static const char *g_help_msg[] = {
-	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer", "r2unity", "", "show this help", "r2unity?", "", "show this help", "r2unity-D", "", "auto-detect companion files from current binary path", "r2unity-i", "[j]", "summary (metadata version, type/method counts)", "r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments", "r2unity-z", "[j]", "list managed string literals", "r2unity-P", "[*j]", "list P/Invoke (managed -> native)", "r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)", "r2unity-S", "", "emit CycloneDX SBOM (JSON)", "Variables:", "", "", "r2unity.metadata", "", "path to global-metadata.dat", "r2unity.library", "", "path to IL2CPP native library", NULL
+	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
+	"r2unity", "", "show this help",
+	"r2unity?", "", "show this help",
+	"r2unity-D", "", "auto-detect companion files from current binary path",
+	"r2unity-i", "[j]", "summary (metadata version, type/method counts)",
+	"r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments",
+	"r2unity-z", "[j]", "list managed string literals",
+	"r2unity-P", "[*j]", "list P/Invoke (managed -> native)",
+	"r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)",
+	"r2unity-S", "", "emit CycloneDX SBOM (JSON)", "Variables:", "", "",
+	"r2unity.metadata", "", "path to global-metadata.dat",
+	"r2unity.library", "", "path to IL2CPP native library",
+	NULL
 };
+// clang-format on
 
 static char *method_attrs_str(unsigned flags) {
 	enum {

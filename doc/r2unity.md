@@ -1126,7 +1126,6 @@ Data present on disk / in the binary but **not yet consumed**:
 - `reverse-pinvoke-count`, `reverse-pinvoke-list` — `-R`
 - `strings-list` — `-z`
 
-
 ## 9. Further reading
 
 Primary references used by r2unity's decoders:

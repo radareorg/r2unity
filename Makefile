@@ -1,4 +1,12 @@
 EXEC = r2unity
+
+SOEXT = $(shell r2 -H R2_LIBEXT)
+ifeq ($(SOEXT),dylib)
+PLUGIN_SHFLAGS = -dynamiclib
+else
+PLUGIN_SHFLAGS = -shared
+endif
+
 CORE_PLUGIN = src/r2/core_r2unity.$(SOEXT)
 BIN_PLUGIN = src/r2/bin_r2unity.$(SOEXT)
 PLUGINS = $(CORE_PLUGIN) $(BIN_PLUGIN)
@@ -14,13 +22,6 @@ CORE_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_core 2>/dev/null || echo "")
 # r_bin plugin flags
 BIN_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_bin 2>/dev/null || echo "")
 BIN_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_bin 2>/dev/null || echo "")
-
-SOEXT = $(shell r2 -H R2_LIBEXT)
-ifeq ($(SOEXT),dylib)
-PLUGIN_SHFLAGS = -dynamiclib
-else
-PLUGIN_SHFLAGS = -shared
-endif
 
 R2_USER_PLUGINS = $(shell r2 -H R2_USER_PLUGINS 2>/dev/null)
 
@@ -39,7 +40,7 @@ plugin: $(PLUGINS)
 install-plugin: $(PLUGINS)
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	mkdir -p "$(R2_USER_PLUGINS)"
-	cp $(PLUGINS) "$(R2_USER_PLUGINS)/"
+	cp -f $(PLUGINS) "$(R2_USER_PLUGINS)/"
 
 uninstall-plugin:
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
@@ -55,8 +56,6 @@ user-install: install-plugin
 
 user-uninstall: uninstall-plugin
 	rm -f "$(R2PM_BINDIR)/$(EXEC)"
-
-
 
 $(EXEC): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)

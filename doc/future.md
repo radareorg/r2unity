@@ -814,6 +814,7 @@ Ordered by RE value vs. implementation effort:
 - **ELF**: packed Android relocations (`DT_ANDROID_RELA =
 	0x60000010`, `DT_ANDROID_RELR = 0x6fffe000`) not handled —
 	Play-Store builds compressed with packed relocs read as "no
+	relocations".
 	`DT_VERSYM`/`DT_VERNEED` not consulted (would help identify
 	Unity version from the `.so` directly). `ET_EXEC` vs `ET_DYN`
 	branching (we assume PIC shared objects).
