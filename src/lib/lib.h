@@ -375,11 +375,12 @@ R_API bool r2unity_is_debug (void);
 
 /* Companion-file discovery.
  *
- * Given any file inside a Unity IL2CPP deployment (the main app binary, the
- * IL2CPP native library, or a sibling dropped into a flat fixture directory),
- * r2unity_detect_paths probes the well-known layouts for iOS, macOS, Windows,
- * Linux, Android (extracted APK) and the r2unity companion-file layout. Returns
- * NULL if no layout matches or `global-metadata.dat` cannot be located. */
+ * Given any file or root directory inside a Unity IL2CPP deployment (the main
+ * app binary, the IL2CPP native library, or a sibling dropped into a flat
+ * fixture directory), r2unity_detect_paths probes the well-known layouts for
+ * iOS, macOS, Windows, Linux, Android (extracted APK) and the r2unity
+ * companion-file layout. Returns NULL if no layout matches or
+ * `global-metadata.dat` cannot be located. */
 typedef struct {
 	char *platform;        /* "ios", "macos", "windows", "linux", "android", "fixture" */
 	char *main_executable; /* absolute path of the input file */

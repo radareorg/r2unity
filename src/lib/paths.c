@@ -316,6 +316,57 @@ static char *expand_app_bundle (const char *dir) {
 	return NULL;
 }
 
+/* Extracted iOS app root without a .app suffix: Data sits next to the main
+ * Mach-O, whose basename is project-specific. */
+static char *expand_ios_root_dir (const char *dir) {
+	char *metadata = find_ios_metadata (dir);
+	if (!metadata) {
+		return NULL;
+	}
+	free (metadata);
+
+	char *out = NULL;
+	if (take_if_exists (&out, r_file_new (dir, "Frameworks", "UnityFramework.framework", "UnityFramework", NULL))) {
+		return out;
+	}
+	if (take_if_exists (&out, pjoin (dir, "UnityFramework"))) {
+		return out;
+	}
+
+	RList *entries = r_sys_dir (dir);
+	if (!entries) {
+		return NULL;
+	}
+	char *fallback = NULL;
+	RListIter *it;
+	char *name;
+	r_list_foreach (entries, it, name) {
+		if (*name == '.') {
+			continue;
+		}
+		if (!strcmp (name, "Data") || !strcmp (name, "Info.plist")
+				|| !strcmp (name, "PkgInfo") || !strcmp (name, "global-metadata.dat")
+				|| !strcmp (name, "embedded.mobileprovision")) {
+			continue;
+		}
+		char *f = pjoin (dir, name);
+		if (r_file_is_regular (f)) {
+			if (r_file_is_executable (f)) {
+				r_list_free (entries);
+				free (fallback);
+				return f;
+			}
+			if (!fallback) {
+				fallback = f;
+				continue;
+			}
+		}
+		free (f);
+	}
+	r_list_free (entries);
+	return fallback;
+}
+
 /* Windows/Linux standalone: look for a *_Data sibling and pick its stem as the
  * main exe (or fall back to the IL2CPP binary). */
 static char *expand_winlin_dir (const char *dir) {
@@ -384,6 +435,10 @@ static char *expand_dir_input (const char *dir) {
 		if (out) {
 			return out;
 		}
+	}
+	char *ios = expand_ios_root_dir (dir);
+	if (ios) {
+		return ios;
 	}
 	char *flat = find_il2cpp_sibling (dir);
 	if (flat) {
