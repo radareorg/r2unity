@@ -3,16 +3,16 @@
 #include "lib.h"
 #include <r_util.h>
 
-static bool str_ieq (const char *a, const char *b) {
+static bool str_ieq(const char *a, const char *b) {
 	return a && b && !strcasecmp (a, b);
 }
 
-static char *pjoin (const char *a, const char *b) {
+static char *pjoin(const char *a, const char *b) {
 	return r_str_newf ("%s/%s", a, b);
 }
 
 /* Take ownership of `candidate` if it exists on disk; otherwise free it. */
-static bool take_if_exists (char **out, char *candidate) {
+static bool take_if_exists(char **out, char *candidate) {
 	if (r_file_exists (candidate)) {
 		*out = candidate;
 		return true;
@@ -23,19 +23,19 @@ static bool take_if_exists (char **out, char *candidate) {
 
 /* IL2CPP native-library basenames, in the order the flat/fixture detector
  * should probe for them. NULL platform entries are still valid basenames
- * (the fixture layout has no platform to report). */
+ *(the fixture layout has no platform to report). */
 static const struct {
 	const char *platform;
 	const char *basename;
 } il2cpp_map[] = {
-	{ "ios",     "UnityFramework" },
-	{ "macos",   "GameAssembly.dylib" },
+	{ "ios", "UnityFramework" },
+	{ "macos", "GameAssembly.dylib" },
 	{ "windows", "GameAssembly.dll" },
-	{ "linux",   "GameAssembly.so" },
+	{ "linux", "GameAssembly.so" },
 	{ "android", "libil2cpp.so" },
 };
 
-static const char *il2cpp_basename_for (const char *platform) {
+static const char *il2cpp_basename_for(const char *platform) {
 	for (size_t i = 0; i < sizeof (il2cpp_map) / sizeof (il2cpp_map[0]); i++) {
 		if (!strcmp (platform, il2cpp_map[i].platform)) {
 			return il2cpp_map[i].basename;
@@ -44,7 +44,7 @@ static const char *il2cpp_basename_for (const char *platform) {
 	return NULL;
 }
 
-static bool is_il2cpp_basename (const char *base) {
+static bool is_il2cpp_basename(const char *base) {
 	for (size_t i = 0; i < sizeof (il2cpp_map) / sizeof (il2cpp_map[0]); i++) {
 		if (str_ieq (base, il2cpp_map[i].basename)) {
 			return true;
@@ -53,7 +53,7 @@ static bool is_il2cpp_basename (const char *base) {
 	return false;
 }
 
-static char *find_il2cpp_sibling (const char *dir) {
+static char *find_il2cpp_sibling(const char *dir) {
 	char *found = NULL;
 	for (size_t i = 0; i < sizeof (il2cpp_map) / sizeof (il2cpp_map[0]); i++) {
 		if (take_if_exists (&found, pjoin (dir, il2cpp_map[i].basename))) {
@@ -63,7 +63,7 @@ static char *find_il2cpp_sibling (const char *dir) {
 	return NULL;
 }
 
-static char *strip_ext_icase (const char *name, const char *ext) {
+static char *strip_ext_icase(const char *name, const char *ext) {
 	size_t nlen = strlen (name);
 	size_t elen = strlen (ext);
 	if (nlen > elen && !strcasecmp (name + nlen - elen, ext)) {
@@ -74,7 +74,7 @@ static char *strip_ext_icase (const char *name, const char *ext) {
 
 /* Pick the first *_Data directory whose il2cpp_data/Metadata/global-metadata.dat
  * exists. Returns true and hands ownership via out_data/out_meta on success. */
-static bool take_winlin_data_dir (const char *dir, char **out_data, char **out_meta) {
+static bool take_winlin_data_dir(const char *dir, char **out_data, char **out_meta) {
 	RList *entries = r_sys_dir (dir);
 	if (!entries) {
 		return false;
@@ -102,7 +102,7 @@ static bool take_winlin_data_dir (const char *dir, char **out_data, char **out_m
 	return ok;
 }
 
-static bool try_macos (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
+static bool try_macos(R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Layout: Game.app/Contents/MacOS/Game
 	 *         Game.app/Contents/Frameworks/GameAssembly.dylib
 	 *         Game.app/Contents/Resources/Data/il2cpp_data/Metadata/global-metadata.dat */
@@ -134,7 +134,7 @@ static bool try_macos (R2UnityPaths *p, const char *abs, const char *dir, const 
 	return true;
 }
 
-static char *find_ios_metadata (const char *app_dir) {
+static char *find_ios_metadata(const char *app_dir) {
 	static const char *const metas[] = {
 		"Data/Managed/Metadata/global-metadata.dat",
 		"Data/Raw/Managed/Metadata/global-metadata.dat",
@@ -149,7 +149,7 @@ static char *find_ios_metadata (const char *app_dir) {
 	return NULL;
 }
 
-static bool try_ios (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
+static bool try_ios(R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Framework layout: Game.app/Frameworks/UnityFramework.framework/UnityFramework
 	 * Flat iOS layout:  Game.app/UnityFramework (older builds)
 	 * Extracted app root: Game/Data plus the main Mach-O beside Data
@@ -185,7 +185,7 @@ static bool try_ios (R2UnityPaths *p, const char *abs, const char *dir, const ch
 	return true;
 }
 
-static bool try_winlin_standalone (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
+static bool try_winlin_standalone(R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Windows: Game.exe   + GameAssembly.dll + Game_Data/il2cpp_data/Metadata/global-metadata.dat
 	 * Linux:   Game (ELF) + GameAssembly.so  + Game_Data/il2cpp_data/Metadata/global-metadata.dat
 	 *
@@ -216,7 +216,7 @@ static bool try_winlin_standalone (R2UnityPaths *p, const char *abs, const char 
 
 	if (is_il2cpp) {
 		p->il2cpp_binary = strdup (abs);
-		p->platform = strdup (is_dll ? "windows" : "linux");
+		p->platform = strdup (is_dll? "windows": "linux");
 	} else {
 		char *dll = pjoin (dir, "GameAssembly.dll");
 		char *so = pjoin (dir, "GameAssembly.so");
@@ -226,7 +226,7 @@ static bool try_winlin_standalone (R2UnityPaths *p, const char *abs, const char 
 		} else if (take_if_exists (&p->il2cpp_binary, so)) {
 			p->platform = strdup ("linux");
 		} else {
-			p->platform = strdup (r_str_endswith (base, ".exe") ? "windows" : "linux");
+			p->platform = strdup (r_str_endswith (base, ".exe")? "windows": "linux");
 		}
 	}
 	p->data_dir = data_dir;
@@ -234,7 +234,7 @@ static bool try_winlin_standalone (R2UnityPaths *p, const char *abs, const char 
 	return true;
 }
 
-static bool try_android_apk (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
+static bool try_android_apk(R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Extracted APK: <root>/lib/<abi>/libil2cpp.so
 	 *                <root>/assets/bin/Data/Managed/Metadata/global-metadata.dat */
 	if (!str_ieq (base, "libil2cpp.so")) {
@@ -264,7 +264,7 @@ static bool try_android_apk (R2UnityPaths *p, const char *abs, const char *dir, 
 	return false;
 }
 
-static bool try_fixture (R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
+static bool try_fixture(R2UnityPaths *p, const char *abs, const char *dir, const char *base) {
 	/* Flat fixture: main exe + il2cpp binary + global-metadata.dat all in the
 	 * same directory. Used by users dumping files
 	 * manually for quick triage. */
@@ -276,13 +276,13 @@ static bool try_fixture (R2UnityPaths *p, const char *abs, const char *dir, cons
 	p->platform = strdup ("fixture");
 	p->metadata = metadata;
 	p->data_dir = strdup (dir);
-	p->il2cpp_binary = is_il2cpp_basename (base) ? strdup (abs) : find_il2cpp_sibling (dir);
+	p->il2cpp_binary = is_il2cpp_basename (base)? strdup (abs): find_il2cpp_sibling (dir);
 	return true;
 }
 
 /* Drill into a macOS .app bundle's Contents/MacOS and return the first regular
  * file there; falls back to iOS framework/flat layouts. */
-static char *expand_app_bundle (const char *dir) {
+static char *expand_app_bundle(const char *dir) {
 	char *macos_dir = pjoin (dir, "Contents/MacOS");
 	if (r_file_is_directory (macos_dir)) {
 		RList *entries = r_sys_dir (macos_dir);
@@ -318,7 +318,7 @@ static char *expand_app_bundle (const char *dir) {
 
 /* Extracted iOS app root without a .app suffix: Data sits next to the main
  * Mach-O, whose basename is project-specific. */
-static char *expand_ios_root_dir (const char *dir) {
+static char *expand_ios_root_dir(const char *dir) {
 	char *metadata = find_ios_metadata (dir);
 	if (!metadata) {
 		return NULL;
@@ -344,9 +344,7 @@ static char *expand_ios_root_dir (const char *dir) {
 		if (*name == '.') {
 			continue;
 		}
-		if (!strcmp (name, "Data") || !strcmp (name, "Info.plist")
-				|| !strcmp (name, "PkgInfo") || !strcmp (name, "global-metadata.dat")
-				|| !strcmp (name, "embedded.mobileprovision")) {
+		if (!strcmp (name, "Data") || !strcmp (name, "Info.plist") || !strcmp (name, "PkgInfo") || !strcmp (name, "global-metadata.dat") || !strcmp (name, "embedded.mobileprovision")) {
 			continue;
 		}
 		char *f = pjoin (dir, name);
@@ -369,7 +367,7 @@ static char *expand_ios_root_dir (const char *dir) {
 
 /* Windows/Linux standalone: look for a *_Data sibling and pick its stem as the
  * main exe (or fall back to the IL2CPP binary). */
-static char *expand_winlin_dir (const char *dir) {
+static char *expand_winlin_dir(const char *dir) {
 	RList *entries = r_sys_dir (dir);
 	if (!entries) {
 		return NULL;
@@ -399,7 +397,7 @@ static char *expand_winlin_dir (const char *dir) {
 }
 
 /* Android extracted APK: lib/<abi>/libil2cpp.so */
-static char *expand_apk_dir (const char *dir) {
+static char *expand_apk_dir(const char *dir) {
 	char *lib_dir = pjoin (dir, "lib");
 	if (!r_file_is_directory (lib_dir)) {
 		free (lib_dir);
@@ -429,7 +427,7 @@ static char *expand_apk_dir (const char *dir) {
  * that the per-platform detectors already understand. Probes ordered so that a
  * layout-bearing location wins over a flat fixture. Returns an absolute path or
  * NULL if nothing recognisable was found. */
-static char *expand_dir_input (const char *dir) {
+static char *expand_dir_input(const char *dir) {
 	if (r_str_endswith (dir, ".app")) {
 		char *out = expand_app_bundle (dir);
 		if (out) {
@@ -483,11 +481,7 @@ R_API R2UnityPaths *r2unity_detect_paths(const char *input) {
 	char *dir = r_file_dirname (abs);
 	const char *base = r_file_basename (abs);
 
-	bool ok = try_macos (p, abs, dir, base)
-		|| try_ios (p, abs, dir, base)
-		|| try_android_apk (p, abs, dir, base)
-		|| try_winlin_standalone (p, abs, dir, base)
-		|| try_fixture (p, abs, dir, base);
+	bool ok = try_macos (p, abs, dir, base) || try_ios (p, abs, dir, base) || try_android_apk (p, abs, dir, base) || try_winlin_standalone (p, abs, dir, base) || try_fixture (p, abs, dir, base);
 
 	free (dir);
 	if (!ok) {
@@ -497,7 +491,7 @@ R_API R2UnityPaths *r2unity_detect_paths(const char *input) {
 	return p;
 }
 
-R_API void r2unity_free_paths (R2UnityPaths *p) {
+R_API void r2unity_free_paths(R2UnityPaths *p) {
 	if (!p) {
 		return;
 	}
@@ -509,7 +503,7 @@ R_API void r2unity_free_paths (R2UnityPaths *p) {
 	free (p);
 }
 
-R_API const char *r2unity_platform_il2cpp_name (const char *platform) {
+R_API const char *r2unity_platform_il2cpp_name(const char *platform) {
 	R_RETURN_VAL_IF_FAIL (platform, NULL);
 	return il2cpp_basename_for (platform);
 }

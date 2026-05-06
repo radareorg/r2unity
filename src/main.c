@@ -7,50 +7,51 @@
 #include "lib/lib.h"
 
 /* System.Reflection.MethodAttributes subset. Returns an owned string
- * (possibly empty) describing the visibility/flags for a managed method. */
-static char *method_attrs (unsigned flags) {
+ *(possibly empty) describing the visibility/flags for a managed method. */
+static char *method_attrs(unsigned flags) {
 	enum {
 		MemberAccessMask = 0x0007,
-		MdPrivate        = 0x0001,
-		MdFamANDAssem    = 0x0002, /* private protected */
-		MdAssembly       = 0x0003, /* internal */
-		MdFamily         = 0x0004, /* protected */
-		MdFamORAssem     = 0x0005, /* protected internal */
-		MdPublic         = 0x0006,
-		MdStatic         = 0x0010,
-		MdFinal          = 0x0020,
-		MdVirtual        = 0x0040,
-		MdAbstract       = 0x0400,
-		MdPinvokeImpl    = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
+		MdPrivate = 0x0001,
+		MdFamANDAssem = 0x0002, /* private protected */
+		MdAssembly = 0x0003, /* internal */
+		MdFamily = 0x0004, /* protected */
+		MdFamORAssem = 0x0005, /* protected internal */
+		MdPublic = 0x0006,
+		MdStatic = 0x0010,
+		MdFinal = 0x0020,
+		MdVirtual = 0x0040,
+		MdAbstract = 0x0400,
+		MdPinvokeImpl = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
 	};
-	static const struct { unsigned bit; const char *name; } bits[] = {
-		{ MdStatic,      "static" },
-		{ MdAbstract,    "abstract" },
-		{ MdVirtual,     "virtual" },
-		{ MdFinal,       "final" },
+	static const struct {
+		unsigned bit;
+		const char *name;
+	} bits[] = {
+		{ MdStatic, "static" },
+		{ MdAbstract, "abstract" },
+		{ MdVirtual, "virtual" },
+		{ MdFinal, "final" },
 		{ MdPinvokeImpl, "extern" },
-	};
+};
 	const char *vis = "";
 	switch (flags & MemberAccessMask) {
-	case MdPublic:      vis = "public"; break;
-	case MdFamily:      vis = "protected"; break;
-	case MdAssembly:    vis = "internal"; break;
-	case MdFamORAssem:  vis = "protected internal"; break;
+	case MdPublic: vis = "public"; break;
+	case MdFamily: vis = "protected"; break;
+	case MdAssembly: vis = "internal"; break;
+	case MdFamORAssem: vis = "protected internal"; break;
 	case MdFamANDAssem: vis = "private protected"; break;
-	case MdPrivate:     vis = "private"; break;
+	case MdPrivate: vis = "private"; break;
 	}
-	RStrBuf *sb = r_strbuf_new (*vis ? vis : "");
+	RStrBuf *sb = r_strbuf_new (*vis? vis: "");
 	for (size_t i = 0; i < sizeof (bits) / sizeof (bits[0]); i++) {
 		if (flags & bits[i].bit) {
-			r_strbuf_appendf (sb, "%s%s",
-				r_strbuf_length (sb) > 0 ? " " : "",
-				bits[i].name);
+			r_strbuf_appendf (sb, "%s%s", r_strbuf_length (sb) > 0? " ": "", bits[i].name);
 		}
 	}
 	return r_strbuf_drain (sb);
 }
 
-static void print_usage (FILE *out, const char *prog_name) {
+static void print_usage(FILE *out, const char *prog_name) {
 	fprintf (out,
 		"Usage: %s [options] <executable> <global-metadata.dat>\n"
 		"\n"
@@ -84,11 +85,11 @@ static void print_usage (FILE *out, const char *prog_name) {
 		"  Android build:      libil2cpp.so        + global-metadata.dat\n"
 		"                      metadata: ../../assets/bin/Data/Managed/Metadata/global-metadata.dat\n"
 		"  Linux standalone:   GameAssembly.so     + global-metadata.dat\n"
-		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n"
-		, prog_name);
+		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n",
+		prog_name);
 }
 
-static const char *unity_range_from_wire (int wire) {
+static const char *unity_range_from_wire(int wire) {
 	switch (wire) {
 	case 21: return "5.3.0-5.3.5";
 	case 22: return "5.3.6-5.4";
@@ -101,11 +102,11 @@ static const char *unity_range_from_wire (int wire) {
 	}
 }
 
-static void json_escape (FILE *f, const char *s) {
+static void json_escape(FILE *f, const char *s) {
 	for (; s && *s; s++) {
-		unsigned char c = (unsigned char) *s;
+		unsigned char c = (unsigned char)*s;
 		switch (c) {
-		case '"':  fputs ("\\\"", f); break;
+		case '"': fputs ("\\\"", f); break;
 		case '\\': fputs ("\\\\", f); break;
 		case '\b': fputs ("\\b", f); break;
 		case '\f': fputs ("\\f", f); break;
@@ -113,20 +114,23 @@ static void json_escape (FILE *f, const char *s) {
 		case '\r': fputs ("\\r", f); break;
 		case '\t': fputs ("\\t", f); break;
 		default:
-			if (c < 0x20) fprintf (f, "\\u%04x", c);
-			else fputc (c, f);
+			if (c < 0x20) {
+				fprintf (f, "\\u%04x", c);
+			} else {
+				fputc (c, f);
+			}
 		}
 	}
 }
 
-static void print_escaped_literal (FILE *f, const ut8 *buf, size_t len) {
+static void print_escaped_literal(FILE *f, const ut8 *buf, size_t len) {
 	size_t i = 0;
 	while (i < len) {
 		unsigned char c = buf[i];
 		if (c < 0x80) {
 			switch (c) {
 			case '\\': fputs ("\\\\", f); break;
-			case '"':  fputs ("\\\"", f); break;
+			case '"': fputs ("\\\"", f); break;
 			case '\n': fputs ("\\n", f); break;
 			case '\r': fputs ("\\r", f); break;
 			case '\t': fputs ("\\t", f); break;
@@ -142,7 +146,7 @@ static void print_escaped_literal (FILE *f, const ut8 *buf, size_t len) {
 			continue;
 		}
 		RRune ch = 0;
-		int n = r_utf8_decode (buf + i, (int)(len - i), &ch);
+		int n = r_utf8_decode (buf + i, (int) (len - i), &ch);
 		if (n > 0) {
 			fwrite (buf + i, 1, n, f);
 			i += n;
@@ -153,7 +157,7 @@ static void print_escaped_literal (FILE *f, const ut8 *buf, size_t len) {
 	}
 }
 
-static int emit_string_literals (R2UnityMetadata *meta, const char *metadata_path, bool quiet, long limit) {
+static int emit_string_literals(R2UnityMetadata *meta, const char *metadata_path, bool quiet, long limit) {
 	size_t count = 0;
 	Il2CppStringLiteral *lits = r2unity_get_string_literals (meta, &count);
 	if (!lits) {
@@ -165,19 +169,20 @@ static int emit_string_literals (R2UnityMetadata *meta, const char *metadata_pat
 		printf ("# idx\tdata_off\tlen\ttext\n");
 	}
 	size_t max = count;
-	if (limit >= 0 && (size_t) limit < max) {
-		max = (size_t) limit;
+	if (limit >= 0 && (size_t)limit < max) {
+		max = (size_t)limit;
 	}
 	for (size_t i = 0; i < max; i++) {
 		ut8 *bytes = NULL;
 		size_t len = 0;
 		if (!r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
 			printf ("%zu\t0x%x\t%u\t<invalid>\n",
-				i, meta->stringLiteralDataOffset + lits[i].dataIndex, lits[i].length);
+				i,
+				meta->stringLiteralDataOffset + lits[i].dataIndex,
+				lits[i].length);
 			continue;
 		}
-		printf ("%zu\t0x%x\t%u\t\"", i,
-			meta->stringLiteralDataOffset + lits[i].dataIndex, lits[i].length);
+		printf ("%zu\t0x%x\t%u\t\"", i, meta->stringLiteralDataOffset + lits[i].dataIndex, lits[i].length);
 		print_escaped_literal (stdout, bytes, len);
 		printf ("\"\n");
 		R_FREE (bytes);
@@ -186,7 +191,7 @@ static int emit_string_literals (R2UnityMetadata *meta, const char *metadata_pat
 	return 0;
 }
 
-static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *metadata_path) {
+static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path) {
 	size_t img_count = 0;
 	Il2CppImageDefinition *imgs = r2unity_get_images (meta, &img_count);
 	size_t asm_count = 0;
@@ -216,7 +221,7 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 	fprintf (f, "    \"component\": {\n");
 	fprintf (f, "      \"type\": \"application\",\n");
 	fprintf (f, "      \"name\": \"");
-	json_escape (f, exe_path ? exe_path : "unity-build");
+	json_escape (f, exe_path? exe_path: "unity-build");
 	fprintf (f, "\",\n");
 	fprintf (f, "      \"version\": \"%s\",\n", unity_range_from_wire (meta->version));
 	fprintf (f, "      \"properties\": [\n");
@@ -233,53 +238,57 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 	fprintf (f, "  \"components\": [\n");
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = (char *) r2unity_get_string (meta, a->aname.culture_idx);
-		const char *nm = name ? name : "";
-		const char *cl = (culture && *culture) ? culture : "neutral";
+		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		char *culture = (char *)r2unity_get_string (meta, a->aname.culture_idx);
+		const char *nm = name? name: "";
+		const char *cl = (culture && *culture)? culture: "neutral";
 
 		/* image (DLL filename) via a->image_index */
 		const char *img = "";
 		char *img_name_owned = NULL;
-		if (imgs && a->image_index >= 0 && (size_t) a->image_index < img_count) {
-			img_name_owned = (char *) r2unity_get_string (meta, imgs[a->image_index].nameIndex);
-			if (img_name_owned) img = img_name_owned;
+		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
+			img_name_owned = (char *)r2unity_get_string (meta, imgs[a->image_index].nameIndex);
+			if (img_name_owned) {
+				img = img_name_owned;
+			}
 		}
 
 		char pkt_hex[17];
 		int empty = 1;
-		for (int k = 0; k < 8; k++) if (a->aname.public_key_token[k]) { empty = 0; break; }
+		for (int k = 0; k < 8; k++) {
+			if (a->aname.public_key_token[k]) {
+				empty = 0;
+				break;
+			}
+		}
 		if (empty) {
 			strcpy (pkt_hex, "null");
 		} else {
-			snprintf (pkt_hex, sizeof (pkt_hex), "%02x%02x%02x%02x%02x%02x%02x%02x",
-				a->aname.public_key_token[0], a->aname.public_key_token[1],
-				a->aname.public_key_token[2], a->aname.public_key_token[3],
-				a->aname.public_key_token[4], a->aname.public_key_token[5],
-				a->aname.public_key_token[6], a->aname.public_key_token[7]);
+			snprintf (pkt_hex, sizeof (pkt_hex), "%02x%02x%02x%02x%02x%02x%02x%02x", a->aname.public_key_token[0], a->aname.public_key_token[1], a->aname.public_key_token[2], a->aname.public_key_token[3], a->aname.public_key_token[4], a->aname.public_key_token[5], a->aname.public_key_token[6], a->aname.public_key_token[7]);
 		}
 
 		fprintf (f, "    {\n");
 		fprintf (f, "      \"bom-ref\": \"asm:");
 		json_escape (f, nm);
-		fprintf (f, ":%d.%d.%d.%d\",\n",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, ":%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		fprintf (f, "      \"type\": \"library\",\n");
 		fprintf (f, "      \"name\": \"");
 		json_escape (f, nm);
 		fprintf (f, "\",\n");
-		fprintf (f, "      \"version\": \"%d.%d.%d.%d\",\n",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, "      \"version\": \"%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		fprintf (f, "      \"purl\": \"pkg:generic/unity/");
 		json_escape (f, nm);
-		fprintf (f, "@%d.%d.%d.%d\",\n",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, "@%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		fprintf (f, "      \"properties\": [\n");
 		fprintf (f, "        { \"name\": \"dotnet.culture\",          \"value\": \"");
 		json_escape (f, cl);
 		fprintf (f, "\" },\n");
 		fprintf (f, "        { \"name\": \"dotnet.public_key_token\", \"value\": ");
-		if (empty) fprintf (f, "null"); else fprintf (f, "\"%s\"", pkt_hex);
+		if (empty) {
+			fprintf (f, "null");
+		} else {
+			fprintf (f, "\"%s\"", pkt_hex);
+		}
 		fprintf (f, " },\n");
 		fprintf (f, "        { \"name\": \"dotnet.hash_alg\",         \"value\": \"0x%08x\" },\n", a->aname.hash_alg);
 		fprintf (f, "        { \"name\": \"dotnet.flags\",            \"value\": \"0x%08x\" },\n", a->aname.flags);
@@ -289,7 +298,7 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 		fprintf (f, "        { \"name\": \"il2cpp.image_index\",      \"value\": \"%d\" },\n", a->image_index);
 		fprintf (f, "        { \"name\": \"il2cpp.token\",            \"value\": \"0x%08x\" }\n", a->token);
 		fprintf (f, "      ]\n");
-		fprintf (f, "    }%s\n", (i + 1 < asm_count) ? "," : "");
+		fprintf (f, "    }%s\n", (i + 1 < asm_count)? ",": "");
 
 		free (name);
 		free (culture);
@@ -302,28 +311,36 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 	bool first_dep = true;
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		if (a->referenced_count <= 0 || a->referenced_start < 0) continue;
-		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) continue;
-		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
-		const char *nm = name ? name : "";
-		if (!first_dep) fprintf (f, ",\n");
+		if (a->referenced_count <= 0 || a->referenced_start < 0) {
+			continue;
+		}
+		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
+			continue;
+		}
+		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		const char *nm = name? name: "";
+		if (!first_dep) {
+			fprintf (f, ",\n");
+		}
 		first_dep = false;
 		fprintf (f, "    {\n      \"ref\": \"asm:");
 		json_escape (f, nm);
-		fprintf (f, ":%d.%d.%d.%d\",\n      \"dependsOn\": [",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		fprintf (f, ":%d.%d.%d.%d\",\n      \"dependsOn\": [", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		bool first_ref = true;
 		for (int k = 0; k < a->referenced_count; k++) {
 			int32_t ridx = refs[a->referenced_start + k];
-			if (ridx < 0 || (size_t) ridx >= asm_count) continue;
+			if (ridx < 0 || (size_t)ridx >= asm_count) {
+				continue;
+			}
 			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = (char *) r2unity_get_string (meta, r->aname.name_idx);
-			if (!first_ref) fprintf (f, ",");
+			char *rname = (char *)r2unity_get_string (meta, r->aname.name_idx);
+			if (!first_ref) {
+				fprintf (f, ",");
+			}
 			first_ref = false;
 			fprintf (f, "\n        \"asm:");
-			json_escape (f, rname ? rname : "");
-			fprintf (f, ":%d.%d.%d.%d\"",
-				r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
+			json_escape (f, rname? rname: "");
+			fprintf (f, ":%d.%d.%d.%d\"", r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
 			free (rname);
 		}
 		fprintf (f, "\n      ]\n    }");
@@ -338,23 +355,22 @@ static int emit_sbom (R2UnityMetadata *meta, const char *exe_path, const char *m
 }
 
 /* Cross-entry sort for stable output: sort by image_name, then name. */
-static int interop_cmp (const void *a, const void *b) {
-	const R2UnityInterop *x = (const R2UnityInterop *) a;
-	const R2UnityInterop *y = (const R2UnityInterop *) b;
-	const char *xi = x->image_name ? x->image_name : "";
-	const char *yi = y->image_name ? y->image_name : "";
+static int interop_cmp(const void *a, const void *b) {
+	const R2UnityInterop *x = (const R2UnityInterop *)a;
+	const R2UnityInterop *y = (const R2UnityInterop *)b;
+	const char *xi = x->image_name? x->image_name: "";
+	const char *yi = y->image_name? y->image_name: "";
 	int c = strcmp (xi, yi);
 	if (c) {
 		return c;
 	}
-	const char *xn = x->name ? x->name : "";
-	const char *yn = y->name ? y->name : "";
+	const char *xn = x->name? x->name: "";
+	const char *yn = y->name? y->name: "";
 	return strcmp (xn, yn);
 }
 
-static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
-		bool is_json, bool is_r2, bool quiet) {
-	(void) exe_path;
+static int emit_pinvokes(R2UnityMetadata *meta, const char *exe_path, bool is_json, bool is_r2, bool quiet) {
+	(void)exe_path;
 	size_t n = 0;
 	R2UnityInterop *items = r2unity_enumerate_pinvokes (meta, &n);
 	if (items && n > 1) {
@@ -366,13 +382,14 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 		fprintf (f, "{\"ok\":true,\"version\":%d,\"pinvokes\":[", meta->version);
 		for (size_t i = 0; i < n; i++) {
 			R2UnityInterop *it = &items[i];
-			if (i) fputc (',', f);
+			if (i) {
+				fputc (',', f);
+			}
 			fprintf (f, "{\"image\":\"");
-			json_escape (f, it->image_name ? it->image_name : "");
+			json_escape (f, it->image_name? it->image_name: "");
 			fprintf (f, "\",\"method\":\"");
-			json_escape (f, it->name ? it->name : "");
-			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"confidence\":%u",
-				it->token, it->flags, it->iflags, (unsigned) it->confidence);
+			json_escape (f, it->name? it->name: "");
+			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"confidence\":%u", it->token, it->flags, it->iflags, (unsigned)it->confidence);
 			if (it->dll_name) {
 				fprintf (f, ",\"dll\":\"");
 				json_escape (f, it->dll_name);
@@ -404,9 +421,7 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 			}
 			r_name_filter (buf, -1);
 			if (it->dll_name) {
-				printf ("# PInvoke %s -> %s!%s\n", buf,
-					it->dll_name,
-					it->entry_name ? it->entry_name : it->name);
+				printf ("# PInvoke %s -> %s!%s\n", buf, it->dll_name, it->entry_name? it->entry_name: it->name);
 			} else {
 				printf ("# PInvoke %s -> <unresolved>\n", buf);
 			}
@@ -420,12 +435,12 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 			R2UnityInterop *it = &items[i];
 			char *attrs = method_attrs (it->flags);
 			printf ("%s\t%s\t%s\t%s\t%s\t%u\n",
-				it->image_name ? it->image_name : "",
-				it->name ? it->name : "",
-				it->dll_name ? it->dll_name : "<unresolved>",
-				it->entry_name ? it->entry_name : "<default>",
-				*attrs ? attrs : "-",
-				(unsigned) it->confidence);
+				it->image_name? it->image_name: "",
+				it->name? it->name: "",
+				it->dll_name? it->dll_name: "<unresolved>",
+				it->entry_name? it->entry_name: "<default>",
+				*attrs? attrs: "-",
+				(unsigned)it->confidence);
 			free (attrs);
 		}
 		if (!quiet) {
@@ -437,17 +452,16 @@ static int emit_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 	return 0;
 }
 
-static const char *interop_kind_label (uint8_t kind) {
+static const char *interop_kind_label(uint8_t kind) {
 	switch (kind) {
 	case R2U_INTEROP_REVERSE_PINVOKE: return "MonoPInvokeCallback";
-	case R2U_INTEROP_UNMANAGED_ONLY:  return "UnmanagedCallersOnly";
+	case R2U_INTEROP_UNMANAGED_ONLY: return "UnmanagedCallersOnly";
 	default: return "reverse";
 	}
 }
 
-static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
-		bool is_json, bool is_r2, bool quiet) {
-	(void) exe_path;
+static int emit_reverse_pinvokes(R2UnityMetadata *meta, const char *exe_path, bool is_json, bool is_r2, bool quiet) {
+	(void)exe_path;
 	size_t n = 0;
 	R2UnityInterop *items = r2unity_enumerate_reverse_pinvokes (meta, &n);
 	if (items && n > 1) {
@@ -459,15 +473,14 @@ static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 		fprintf (f, "{\"ok\":true,\"version\":%d,\"reverse_pinvokes\":[", meta->version);
 		for (size_t i = 0; i < n; i++) {
 			R2UnityInterop *it = &items[i];
-			if (i) fputc (',', f);
+			if (i) {
+				fputc (',', f);
+			}
 			fprintf (f, "{\"image\":\"");
-			json_escape (f, it->image_name ? it->image_name : "");
+			json_escape (f, it->image_name? it->image_name: "");
 			fprintf (f, "\",\"method\":\"");
-			json_escape (f, it->name ? it->name : "");
-			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"attribute\":\"%s\",\"confidence\":%u",
-				it->token, it->flags, it->iflags,
-				interop_kind_label (it->kind),
-				(unsigned) it->confidence);
+			json_escape (f, it->name? it->name: "");
+			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"attribute\":\"%s\",\"confidence\":%u", it->token, it->flags, it->iflags, interop_kind_label (it->kind), (unsigned)it->confidence);
 			fputc ('}', f);
 		}
 		fprintf (f, "]}\n");
@@ -495,11 +508,11 @@ static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 			R2UnityInterop *it = &items[i];
 			char *attrs = method_attrs (it->flags);
 			printf ("%s\t%s\t%s\t%s\t%u\n",
-				it->image_name ? it->image_name : "",
-				it->name ? it->name : "",
+				it->image_name? it->image_name: "",
+				it->name? it->name: "",
 				interop_kind_label (it->kind),
-				*attrs ? attrs : "-",
-				(unsigned) it->confidence);
+				*attrs? attrs: "-",
+				(unsigned)it->confidence);
 			free (attrs);
 		}
 		if (!quiet) {
@@ -511,7 +524,7 @@ static int emit_reverse_pinvokes (R2UnityMetadata *meta, const char *exe_path,
 	return 0;
 }
 
-static void json_kv_str (FILE *f, const char *key, const char *value) {
+static void json_kv_str(FILE *f, const char *key, const char *value) {
 	fprintf (f, "\"%s\":", key);
 	if (value) {
 		fputc ('"', f);
@@ -522,7 +535,7 @@ static void json_kv_str (FILE *f, const char *key, const char *value) {
 	}
 }
 
-static int emit_detected_paths (const char *input, bool as_json) {
+static int emit_detected_paths(const char *input, bool as_json) {
 	R2UnityPaths *p = r2unity_detect_paths (input);
 	if (!p) {
 		if (as_json) {
@@ -548,16 +561,19 @@ static int emit_detected_paths (const char *input, bool as_json) {
 		json_kv_str (f, "data_dir", p->data_dir);
 		fputs ("}\n", f);
 	} else {
-		static const struct { const char *label; size_t offset; } rows[] = {
+		static const struct {
+			const char *label;
+			size_t offset;
+		} rows[] = {
 			{ "platform:        ", offsetof (R2UnityPaths, platform) },
 			{ "main_executable: ", offsetof (R2UnityPaths, main_executable) },
 			{ "il2cpp_binary:   ", offsetof (R2UnityPaths, il2cpp_binary) },
 			{ "metadata:        ", offsetof (R2UnityPaths, metadata) },
 			{ "data_dir:        ", offsetof (R2UnityPaths, data_dir) },
-		};
+};
 		for (size_t i = 0; i < sizeof (rows) / sizeof (rows[0]); i++) {
-			const char *v = *(char **) ((char *) p + rows[i].offset);
-			printf ("%s%s\n", rows[i].label, v ? v : "-");
+			const char *v = *(char **) ((char *)p + rows[i].offset);
+			printf ("%s%s\n", rows[i].label, v? v: "-");
 		}
 	}
 	r2unity_free_paths (p);
@@ -565,14 +581,16 @@ static int emit_detected_paths (const char *input, bool as_json) {
 }
 
 /* Sniff the exe magic and dispatch to the matching fast finder. */
-static bool find_method_pointers_fast (R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
-	ut8 magic[4] = {0};
+static bool find_method_pointers_fast(R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
+	ut8 magic[4] = { 0 };
 	FILE *fp = fopen (path, "rb");
 	if (fp) {
-		(void) fread (magic, 1, 4, fp);
+		(void)fread (magic, 1, 4, fp);
 		fclose (fp);
 	}
-	if (!memcmp (magic, "\x7f" "ELF", 4)) {
+	if (!memcmp (magic, "\x7f"
+		"ELF",
+		4)) {
 		return r2unity_find_method_pointers_elf (meta, path, out_ptrs);
 	}
 	ut32 m = r_read_le32 (magic);
@@ -588,25 +606,25 @@ static bool find_method_pointers_fast (R2UnityMetadata *meta, const char *path, 
 /* Emit one method as r2 script commands. Methods without a plausible native
  * address (addr <= 0x1000) are skipped entirely and do not count against the
  * emit limit. Returns true when output was produced. */
-static bool emit_r2_method (R2UnityMetadata *meta,
-		const Il2CppMethodDefinition *m,
-		const Il2CppTypeDefinition *td,
-		const Il2CppImageDefinition *img,
-		bool have_img_map,
-		ut64 addr) {
+static bool emit_r2_method(R2UnityMetadata *meta,
+	const Il2CppMethodDefinition *m,
+	const Il2CppTypeDefinition *td,
+	const Il2CppImageDefinition *img,
+	bool have_img_map,
+	ut64 addr) {
 	if (addr <= 0x1000) {
 		return false;
 	}
-	char *mn = (char *) r2unity_get_string (meta, m->nameIndex);
+	char *mn = (char *)r2unity_get_string (meta, m->nameIndex);
 	if (!mn) {
 		return false;
 	}
-	char *ns = td ? (char *) r2unity_get_string (meta, td->namespaceIndex) : NULL;
-	char *tn = td ? (char *) r2unity_get_string (meta, td->nameIndex) : NULL;
+	char *ns = td? (char *)r2unity_get_string (meta, td->namespaceIndex): NULL;
+	char *tn = td? (char *)r2unity_get_string (meta, td->nameIndex): NULL;
 	char fullname[1024];
-	unsigned pc = (unsigned) m->parameterCount;
+	unsigned pc = (unsigned)m->parameterCount;
 	if (ns && *ns) {
-		snprintf (fullname, sizeof (fullname), "%s.%s.%s(%u)", ns, tn ? tn : "", mn, pc);
+		snprintf (fullname, sizeof (fullname), "%s.%s.%s(%u)", ns, tn? tn: "", mn, pc);
 	} else if (tn && *tn) {
 		snprintf (fullname, sizeof (fullname), "%s.%s(%u)", tn, mn, pc);
 	} else {
@@ -622,19 +640,26 @@ static bool emit_r2_method (R2UnityMetadata *meta,
 	}
 	r_name_filter (fullname, -1);
 	char *attrs = method_attrs (m->flags);
-	char *im = img ? (char *) r2unity_get_string (meta, img->nameIndex) : NULL;
+	char *im = img? (char *)r2unity_get_string (meta, img->nameIndex): NULL;
 	if (im && *im) {
-		printf ("'@0x%"PFMT64x"'f sym.unity.%s.%s\n", addr, im, fullname);
-		printf ("'@0x%"PFMT64x"'CCu Method: [%s]%s%s %s\n",
-			addr, im, *attrs ? " " : "", attrs, fullname);
+		printf ("'@0x%" PFMT64x "'f sym.unity.%s.%s\n", addr, im, fullname);
+		printf ("'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n",
+			addr,
+			im,
+			*attrs? " ": "",
+			attrs,
+			fullname);
 	} else if (img) {
-		printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
-		printf ("'@0x%"PFMT64x"'CCu Method:%s%s %s\n",
-			addr, *attrs ? " " : "", attrs, fullname);
+		printf ("'@0x%" PFMT64x "'f sym.unity.%s\n", addr, fullname);
+		printf ("'@0x%" PFMT64x "'CCu Method:%s%s %s\n",
+			addr,
+			*attrs? " ": "",
+			attrs,
+			fullname);
 	} else {
-		printf ("'@0x%"PFMT64x"'f sym.unity.%s\n", addr, fullname);
+		printf ("'@0x%" PFMT64x "'f sym.unity.%s\n", addr, fullname);
 		if (*attrs) {
-			printf ("'@0x%"PFMT64x"'CCu Method: %s\n", addr, attrs);
+			printf ("'@0x%" PFMT64x "'CCu Method: %s\n", addr, attrs);
 		}
 	}
 	free (im);
@@ -642,7 +667,7 @@ static bool emit_r2_method (R2UnityMetadata *meta,
 	return true;
 }
 
-int main (int argc, char *argv[]) {
+int main(int argc, char *argv[]) {
 	bool json_one_line = false;
 	bool r2_script = false;
 	bool quiet = false;
@@ -670,8 +695,8 @@ int main (int argc, char *argv[]) {
 		case 'D': detect_paths = true; break;
 		case 'z': string_literals = true; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
-		case 'a': gmp_addr = (ut64) strtoull (optarg, NULL, 0); break;
-		case 'c': gmp_count = (size_t) strtoull (optarg, NULL, 0); break;
+		case 'a': gmp_addr = (ut64)strtoull (optarg, NULL, 0); break;
+		case 'c': gmp_count = (size_t)strtoull (optarg, NULL, 0); break;
 		case 'h':
 			print_usage (stdout, argv[0]);
 			return 0;
@@ -786,7 +811,10 @@ int main (int argc, char *argv[]) {
 	if (json_one_line) {
 		// Output a single stable JSON line
 		printf ("{\"ok\":true,\"version\":%d,\"types\":%u,\"methods\":%u,\"has_ptrs\":%s}\n",
-			meta->version, (unsigned)type_count, (unsigned)method_count, has_ptrs? "true": "false");
+			meta->version,
+			(unsigned)type_count,
+			(unsigned)method_count,
+			has_ptrs? "true": "false");
 		R_FREE (method_ptrs);
 		R_FREE (methods);
 		R_FREE (types);
@@ -802,7 +830,7 @@ int main (int argc, char *argv[]) {
 
 	/* Build a typeIndex -> imageIndex map so method output can be prefixed with
 	 * the owning DLL name. Keep method_ptrs 1:1 with method_definitions — gaps
-	 * (zeros) are expected for abstract/generic/external methods. */
+	 *(zeros) are expected for abstract/generic/external methods. */
 	size_t img_count = 0;
 	Il2CppImageDefinition *images = r2unity_get_images (meta, &img_count);
 	int *type2img = NULL;
@@ -813,9 +841,9 @@ int main (int argc, char *argv[]) {
 		}
 		for (size_t ii = 0; ii < img_count; ii++) {
 			int start = images[ii].typeStart;
-			int count = (int) images[ii].typeCount;
+			int count = (int)images[ii].typeCount;
 			for (int k = 0; k < count && start >= 0 && (size_t) (start + k) < type_count; k++) {
-				type2img[start + k] = (int) ii;
+				type2img[start + k] = (int)ii;
 			}
 		}
 	}
@@ -828,14 +856,14 @@ int main (int argc, char *argv[]) {
 			}
 			Il2CppMethodDefinition *m = &methods[j];
 			const Il2CppTypeDefinition *td = NULL;
-			if (m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
+			if (m->declaringType >= 0 && (size_t)m->declaringType < type_count) {
 				td = &types[m->declaringType];
 			}
-			ut64 addr = (has_ptrs && method_ptrs) ? method_ptrs[j] : 0;
+			ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[j]: 0;
 			const Il2CppImageDefinition *img = NULL;
 			if (type2img && td) {
 				int ii = type2img[m->declaringType];
-				if (ii >= 0 && (size_t) ii < img_count) {
+				if (ii >= 0 && (size_t)ii < img_count) {
 					img = &images[ii];
 				}
 			}

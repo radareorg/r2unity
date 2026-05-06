@@ -5,65 +5,53 @@
 #include "../lib/lib.h"
 
 static const char *g_help_msg[] = {
-	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
-	"r2unity", "", "show this help",
-	"r2unity?", "", "show this help",
-	"r2unity-D", "", "auto-detect companion files from current binary path",
-	"r2unity-i", "[j]", "summary (metadata version, type/method counts)",
-	"r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments",
-	"r2unity-z", "[j]", "list managed string literals",
-	"r2unity-P", "[*j]", "list P/Invoke (managed -> native)",
-	"r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)",
-	"r2unity-S", "", "emit CycloneDX SBOM (JSON)",
-	"Variables:", "", "",
-	"r2unity.metadata", "", "path to global-metadata.dat",
-	"r2unity.library", "", "path to IL2CPP native library",
-	NULL
+	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer", "r2unity", "", "show this help", "r2unity?", "", "show this help", "r2unity-D", "", "auto-detect companion files from current binary path", "r2unity-i", "[j]", "summary (metadata version, type/method counts)", "r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments", "r2unity-z", "[j]", "list managed string literals", "r2unity-P", "[*j]", "list P/Invoke (managed -> native)", "r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)", "r2unity-S", "", "emit CycloneDX SBOM (JSON)", "Variables:", "", "", "r2unity.metadata", "", "path to global-metadata.dat", "r2unity.library", "", "path to IL2CPP native library", NULL
 };
 
-static char *method_attrs_str (unsigned flags) {
+static char *method_attrs_str(unsigned flags) {
 	enum {
 		MemberAccessMask = 0x0007,
-		MdPrivate        = 0x0001,
-		MdFamANDAssem    = 0x0002,
-		MdAssembly       = 0x0003,
-		MdFamily         = 0x0004,
-		MdFamORAssem     = 0x0005,
-		MdPublic         = 0x0006,
-		MdStatic         = 0x0010,
-		MdFinal          = 0x0020,
-		MdVirtual        = 0x0040,
-		MdAbstract       = 0x0400,
-		MdPinvokeImpl    = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
+		MdPrivate = 0x0001,
+		MdFamANDAssem = 0x0002,
+		MdAssembly = 0x0003,
+		MdFamily = 0x0004,
+		MdFamORAssem = 0x0005,
+		MdPublic = 0x0006,
+		MdStatic = 0x0010,
+		MdFinal = 0x0020,
+		MdVirtual = 0x0040,
+		MdAbstract = 0x0400,
+		MdPinvokeImpl = IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL
 	};
-	static const struct { unsigned bit; const char *name; } bits[] = {
-		{ MdStatic,      "static" },
-		{ MdAbstract,    "abstract" },
-		{ MdVirtual,     "virtual" },
-		{ MdFinal,       "final" },
+	static const struct {
+		unsigned bit;
+		const char *name;
+	} bits[] = {
+		{ MdStatic, "static" },
+		{ MdAbstract, "abstract" },
+		{ MdVirtual, "virtual" },
+		{ MdFinal, "final" },
 		{ MdPinvokeImpl, "extern" },
-	};
+};
 	const char *vis = "";
 	switch (flags & MemberAccessMask) {
-	case MdPublic:      vis = "public"; break;
-	case MdFamily:      vis = "protected"; break;
-	case MdAssembly:    vis = "internal"; break;
-	case MdFamORAssem:  vis = "protected internal"; break;
+	case MdPublic: vis = "public"; break;
+	case MdFamily: vis = "protected"; break;
+	case MdAssembly: vis = "internal"; break;
+	case MdFamORAssem: vis = "protected internal"; break;
 	case MdFamANDAssem: vis = "private protected"; break;
-	case MdPrivate:     vis = "private"; break;
+	case MdPrivate: vis = "private"; break;
 	}
-	RStrBuf *sb = r_strbuf_new (*vis ? vis : "");
+	RStrBuf *sb = r_strbuf_new (*vis? vis: "");
 	for (size_t i = 0; i < sizeof (bits) / sizeof (bits[0]); i++) {
 		if (flags & bits[i].bit) {
-			r_strbuf_appendf (sb, "%s%s",
-				r_strbuf_length (sb) > 0 ? " " : "",
-				bits[i].name);
+			r_strbuf_appendf (sb, "%s%s", r_strbuf_length (sb) > 0? " ": "", bits[i].name);
 		}
 	}
 	return r_strbuf_drain (sb);
 }
 
-static const char *unity_range_from_wire (int wire) {
+static const char *unity_range_from_wire(int wire) {
 	switch (wire) {
 	case 21: return "5.3.0-5.3.5";
 	case 22: return "5.3.6-5.4";
@@ -76,21 +64,21 @@ static const char *unity_range_from_wire (int wire) {
 	}
 }
 
-static const char *current_binary_path (RCore *core) {
+static const char *current_binary_path(RCore *core) {
 	if (core && core->io && core->io->desc && core->io->desc->name) {
 		return core->io->desc->name;
 	}
 	return NULL;
 }
 
-static const char *cfg_get_nonempty (RConfig *cfg, const char *key) {
+static const char *cfg_get_nonempty(RConfig *cfg, const char *key) {
 	const char *v = r_config_get (cfg, key);
-	return (v && *v) ? v : NULL;
+	return (v && *v)? v: NULL;
 }
 
 /* Resolve (and on first use, cache into the eval vars) the metadata path for
  * the current session. Returns a pointer owned by the RConfig, or NULL. */
-static const char *resolve_metadata_path (RCore *core) {
+static const char *resolve_metadata_path(RCore *core) {
 	const char *v = cfg_get_nonempty (core->config, "r2unity.metadata");
 	if (v) {
 		return v;
@@ -113,7 +101,7 @@ static const char *resolve_metadata_path (RCore *core) {
 	return cfg_get_nonempty (core->config, "r2unity.metadata");
 }
 
-static const char *resolve_library_path (RCore *core) {
+static const char *resolve_library_path(RCore *core) {
 	const char *v = cfg_get_nonempty (core->config, "r2unity.library");
 	if (v) {
 		return v;
@@ -136,7 +124,7 @@ static const char *resolve_library_path (RCore *core) {
 	return cfg_get_nonempty (core->config, "r2unity.library");
 }
 
-static R2UnityMetadata *open_metadata (RCore *core, RBuffer **out_buf) {
+static R2UnityMetadata *open_metadata(RCore *core, RBuffer **out_buf) {
 	const char *path = resolve_metadata_path (core);
 	if (!path) {
 		R_LOG_ERROR ("r2unity.metadata is not set. Run r2unity-D or set it manually");
@@ -157,7 +145,7 @@ static R2UnityMetadata *open_metadata (RCore *core, RBuffer **out_buf) {
 	return meta;
 }
 
-static void close_metadata (R2UnityMetadata *meta, RBuffer *buf) {
+static void close_metadata(R2UnityMetadata *meta, RBuffer *buf) {
 	if (meta) {
 		r2unity_free_metadata (meta);
 	}
@@ -166,7 +154,7 @@ static void close_metadata (R2UnityMetadata *meta, RBuffer *buf) {
 	}
 }
 
-static void json_escape_cons (PJ *pj, const char *key, const char *value) {
+static void json_escape_cons(PJ *pj, const char *key, const char *value) {
 	if (value) {
 		pj_ks (pj, key, value);
 	} else {
@@ -175,7 +163,7 @@ static void json_escape_cons (PJ *pj, const char *key, const char *value) {
 }
 
 /* ---------- r2unity-D (detect paths) ---------- */
-static int cmd_detect (RCore *core, bool as_json) {
+static int cmd_detect(RCore *core, bool as_json) {
 	const char *bin = current_binary_path (core);
 	if (!bin) {
 		R_LOG_ERROR ("no file currently loaded");
@@ -215,18 +203,18 @@ static int cmd_detect (RCore *core, bool as_json) {
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
 	} else {
-		r_cons_printf (core->cons,"platform:        %s\n", p->platform ? p->platform : "-");
-		r_cons_printf (core->cons,"main_executable: %s\n", p->main_executable ? p->main_executable : "-");
-		r_cons_printf (core->cons,"il2cpp_binary:   %s\n", p->il2cpp_binary ? p->il2cpp_binary : "-");
-		r_cons_printf (core->cons,"metadata:        %s\n", p->metadata ? p->metadata : "-");
-		r_cons_printf (core->cons,"data_dir:        %s\n", p->data_dir ? p->data_dir : "-");
+		r_cons_printf (core->cons, "platform:        %s\n", p->platform? p->platform: "-");
+		r_cons_printf (core->cons, "main_executable: %s\n", p->main_executable? p->main_executable: "-");
+		r_cons_printf (core->cons, "il2cpp_binary:   %s\n", p->il2cpp_binary? p->il2cpp_binary: "-");
+		r_cons_printf (core->cons, "metadata:        %s\n", p->metadata? p->metadata: "-");
+		r_cons_printf (core->cons, "data_dir:        %s\n", p->data_dir? p->data_dir: "-");
 	}
 	r2unity_free_paths (p);
 	return 0;
 }
 
 /* ---------- r2unity-i (summary) ---------- */
-static int cmd_info (RCore *core, bool as_json) {
+static int cmd_info(RCore *core, bool as_json) {
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
 	if (!meta) {
@@ -247,19 +235,19 @@ static int cmd_info (RCore *core, bool as_json) {
 		pj_kb (pj, "ok", true);
 		pj_ki (pj, "version", meta->version);
 		pj_ks (pj, "unity_range", unity_range_from_wire (meta->version));
-		pj_kn (pj, "types", (ut64) type_count);
-		pj_kn (pj, "methods", (ut64) method_count);
-		pj_kn (pj, "images", (ut64) img_count);
-		pj_kn (pj, "assemblies", (ut64) asm_count);
+		pj_kn (pj, "types", (ut64)type_count);
+		pj_kn (pj, "methods", (ut64)method_count);
+		pj_kn (pj, "images", (ut64)img_count);
+		pj_kn (pj, "assemblies", (ut64)asm_count);
 		pj_end (pj);
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
 	} else {
-		r_cons_printf (core->cons,"wire_version: %d (%s)\n", meta->version, unity_range_from_wire (meta->version));
-		r_cons_printf (core->cons,"types:        %zu\n", type_count);
-		r_cons_printf (core->cons,"methods:      %zu\n", method_count);
-		r_cons_printf (core->cons,"images:       %zu\n", img_count);
-		r_cons_printf (core->cons,"assemblies:   %zu\n", asm_count);
+		r_cons_printf (core->cons, "wire_version: %d (%s)\n", meta->version, unity_range_from_wire (meta->version));
+		r_cons_printf (core->cons, "types:        %zu\n", type_count);
+		r_cons_printf (core->cons, "methods:      %zu\n", method_count);
+		r_cons_printf (core->cons, "images:       %zu\n", img_count);
+		r_cons_printf (core->cons, "assemblies:   %zu\n", asm_count);
 	}
 
 	R_FREE (types);
@@ -271,14 +259,16 @@ static int cmd_info (RCore *core, bool as_json) {
 }
 
 /* Sniff the exe magic and dispatch to the matching fast finder. */
-static bool find_method_pointers (R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
-	ut8 magic[4] = {0};
+static bool find_method_pointers(R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
+	ut8 magic[4] = { 0 };
 	FILE *fp = fopen (path, "rb");
 	if (fp) {
-		(void) fread (magic, 1, 4, fp);
+		(void)fread (magic, 1, 4, fp);
 		fclose (fp);
 	}
-	if (!memcmp (magic, "\x7f" "ELF", 4)) {
+	if (!memcmp (magic, "\x7f"
+		"ELF",
+		4)) {
 		return r2unity_find_method_pointers_elf (meta, path, out_ptrs);
 	}
 	ut32 m = r_read_le32 (magic);
@@ -292,19 +282,19 @@ static bool find_method_pointers (R2UnityMetadata *meta, const char *path, ut64 
 }
 
 /* Build the fully-qualified method name "Ns.Class.Method(argc)". Caller owns. */
-static char *build_method_fullname (R2UnityMetadata *meta,
-		const Il2CppMethodDefinition *m,
-		const Il2CppTypeDefinition *td) {
-	char *mn = (char *) r2unity_get_string (meta, m->nameIndex);
+static char *build_method_fullname(R2UnityMetadata *meta,
+	const Il2CppMethodDefinition *m,
+	const Il2CppTypeDefinition *td) {
+	char *mn = (char *)r2unity_get_string (meta, m->nameIndex);
 	if (!mn) {
 		return NULL;
 	}
-	char *ns = td ? (char *) r2unity_get_string (meta, td->namespaceIndex) : NULL;
-	char *tn = td ? (char *) r2unity_get_string (meta, td->nameIndex) : NULL;
-	unsigned pc = (unsigned) m->parameterCount;
+	char *ns = td? (char *)r2unity_get_string (meta, td->namespaceIndex): NULL;
+	char *tn = td? (char *)r2unity_get_string (meta, td->nameIndex): NULL;
+	unsigned pc = (unsigned)m->parameterCount;
 	char *out = NULL;
 	if (ns && *ns) {
-		out = r_str_newf ("%s.%s.%s(%u)", ns, tn ? tn : "", mn, pc);
+		out = r_str_newf ("%s.%s.%s(%u)", ns, tn? tn: "", mn, pc);
 	} else if (tn && *tn) {
 		out = r_str_newf ("%s.%s(%u)", tn, mn, pc);
 	} else {
@@ -317,7 +307,7 @@ static char *build_method_fullname (R2UnityMetadata *meta,
 }
 
 /* ---------- r2unity-s (methods) ---------- */
-static int cmd_symbols (RCore *core, char mode) {
+static int cmd_symbols(RCore *core, char mode) {
 	/* mode: 0 = apply to r2 session, '*' = print r2 commands, 'j' = JSON */
 	const char *lib = resolve_library_path (core);
 	if (!lib) {
@@ -355,9 +345,9 @@ static int cmd_symbols (RCore *core, char mode) {
 		}
 		for (size_t ii = 0; ii < img_count; ii++) {
 			int start = images[ii].typeStart;
-			int count = (int) images[ii].typeCount;
+			int count = (int)images[ii].typeCount;
 			for (int k = 0; k < count && start >= 0 && (size_t) (start + k) < type_count; k++) {
-				type2img[start + k] = (int) ii;
+				type2img[start + k] = (int)ii;
 			}
 		}
 	}
@@ -376,14 +366,14 @@ static int cmd_symbols (RCore *core, char mode) {
 	for (size_t j = 0; j < method_count; j++) {
 		Il2CppMethodDefinition *m = &methods[j];
 		const Il2CppTypeDefinition *td = NULL;
-		if (m->declaringType >= 0 && (size_t) m->declaringType < type_count) {
+		if (m->declaringType >= 0 && (size_t)m->declaringType < type_count) {
 			td = &types[m->declaringType];
 		}
-		ut64 addr = (has_ptrs && method_ptrs) ? method_ptrs[j] : 0;
+		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[j]: 0;
 		const Il2CppImageDefinition *img = NULL;
 		if (type2img && td) {
 			int ii = type2img[m->declaringType];
-			if (ii >= 0 && (size_t) ii < img_count) {
+			if (ii >= 0 && (size_t)ii < img_count) {
 				img = &images[ii];
 			}
 		}
@@ -391,7 +381,7 @@ static int cmd_symbols (RCore *core, char mode) {
 		if (!fullname) {
 			continue;
 		}
-		char *imgname = img ? (char *) r2unity_get_string (meta, img->nameIndex) : NULL;
+		char *imgname = img? (char *)r2unity_get_string (meta, img->nameIndex): NULL;
 		char flag_buf[1024];
 		if (imgname && *imgname) {
 			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s.%s", imgname, fullname);
@@ -416,14 +406,13 @@ static int cmd_symbols (RCore *core, char mode) {
 			pj_end (pj);
 		} else if (mode == '*') {
 			if (addr > 0x1000) {
-				r_cons_printf (core->cons,"'@0x%"PFMT64x"'f %s\n", addr, flag_buf);
+				r_cons_printf (core->cons, "'@0x%" PFMT64x "'f %s\n", addr, flag_buf);
 				if (imgname && *imgname) {
-					r_cons_printf (core->cons,"'@0x%"PFMT64x"'CCu Method: [%s]%s%s %s\n",
-						addr, imgname, *attrs ? " " : "", attrs, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n", addr, imgname, *attrs? " ": "", attrs, fullname);
 				} else if (*attrs) {
-					r_cons_printf (core->cons,"'@0x%"PFMT64x"'CCu Method: %s %s\n", addr, attrs, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s %s\n", addr, attrs, fullname);
 				} else {
-					r_cons_printf (core->cons,"'@0x%"PFMT64x"'CCu Method: %s\n", addr, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s\n", addr, fullname);
 				}
 				listed++;
 			}
@@ -434,7 +423,10 @@ static int cmd_symbols (RCore *core, char mode) {
 				char *comment = NULL;
 				if (imgname && *imgname) {
 					comment = r_str_newf ("Method: [%s]%s%s %s",
-						imgname, *attrs ? " " : "", attrs, fullname);
+						imgname,
+						*attrs? " ": "",
+						attrs,
+						fullname);
 				} else if (*attrs) {
 					comment = r_str_newf ("Method: %s %s", attrs, fullname);
 				} else {
@@ -461,8 +453,9 @@ static int cmd_symbols (RCore *core, char mode) {
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
 	} else if (mode == 0) {
-		R_LOG_INFO ("r2unity: applied %"PFMT64u" method symbols from %s",
-			applied, lib);
+		R_LOG_INFO ("r2unity: applied %" PFMT64u " method symbols from %s",
+			applied,
+			lib);
 	}
 
 	R_FREE (method_ptrs);
@@ -475,7 +468,7 @@ static int cmd_symbols (RCore *core, char mode) {
 }
 
 /* ---------- r2unity-z (string literals) ---------- */
-static int cmd_strings (RCore *core, char mode) {
+static int cmd_strings(RCore *core, char mode) {
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
 	if (!meta) {
@@ -493,11 +486,11 @@ static int cmd_strings (RCore *core, char mode) {
 		pj = pj_new ();
 		pj_o (pj);
 		pj_kb (pj, "ok", true);
-		pj_kn (pj, "count", (ut64) count);
+		pj_kn (pj, "count", (ut64)count);
 		pj_ka (pj, "strings");
 	} else {
-		r_cons_printf (core->cons,"# managed string literals (count=%zu)\n", count);
-		r_cons_printf (core->cons,"# idx\tdata_off\tlen\ttext\n");
+		r_cons_printf (core->cons, "# managed string literals (count=%zu)\n", count);
+		r_cons_printf (core->cons, "# idx\tdata_off\tlen\ttext\n");
 	}
 	for (size_t i = 0; i < count; i++) {
 		ut8 *bytes = NULL;
@@ -505,17 +498,16 @@ static int cmd_strings (RCore *core, char mode) {
 		ut32 data_off = meta->stringLiteralDataOffset + lits[i].dataIndex;
 		if (!r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
 			if (mode != 'j') {
-				r_cons_printf (core->cons,"%zu\t0x%x\t%u\t<invalid>\n",
-					i, data_off, lits[i].length);
+				r_cons_printf (core->cons, "%zu\t0x%x\t%u\t<invalid>\n", i, data_off, lits[i].length);
 			}
 			continue;
 		}
 		if (mode == 'j') {
 			pj_o (pj);
-			pj_kn (pj, "idx", (ut64) i);
-			pj_kn (pj, "data_off", (ut64) data_off);
-			pj_kn (pj, "len", (ut64) lits[i].length);
-			char *text = r_str_ndup ((const char *) bytes, (int) len);
+			pj_kn (pj, "idx", (ut64)i);
+			pj_kn (pj, "data_off", (ut64)data_off);
+			pj_kn (pj, "len", (ut64)lits[i].length);
+			char *text = r_str_ndup ((const char *)bytes, (int)len);
 			if (text) {
 				pj_ks (pj, "text", text);
 				free (text);
@@ -524,10 +516,9 @@ static int cmd_strings (RCore *core, char mode) {
 			}
 			pj_end (pj);
 		} else {
-			char *text = r_str_ndup ((const char *) bytes, (int) len);
-			char *escaped = text ? r_str_escape (text) : NULL;
-			r_cons_printf (core->cons,"%zu\t0x%x\t%u\t\"%s\"\n", i, data_off,
-				lits[i].length, escaped ? escaped : "");
+			char *text = r_str_ndup ((const char *)bytes, (int)len);
+			char *escaped = text? r_str_escape (text): NULL;
+			r_cons_printf (core->cons, "%zu\t0x%x\t%u\t\"%s\"\n", i, data_off, lits[i].length, escaped? escaped: "");
 			free (escaped);
 			free (text);
 		}
@@ -545,29 +536,29 @@ static int cmd_strings (RCore *core, char mode) {
 }
 
 /* ---------- r2unity-P / r2unity-R (interop) ---------- */
-static int interop_cmp (const void *a, const void *b) {
-	const R2UnityInterop *x = (const R2UnityInterop *) a;
-	const R2UnityInterop *y = (const R2UnityInterop *) b;
-	const char *xi = x->image_name ? x->image_name : "";
-	const char *yi = y->image_name ? y->image_name : "";
+static int interop_cmp(const void *a, const void *b) {
+	const R2UnityInterop *x = (const R2UnityInterop *)a;
+	const R2UnityInterop *y = (const R2UnityInterop *)b;
+	const char *xi = x->image_name? x->image_name: "";
+	const char *yi = y->image_name? y->image_name: "";
 	int c = strcmp (xi, yi);
 	if (c) {
 		return c;
 	}
-	const char *xn = x->name ? x->name : "";
-	const char *yn = y->name ? y->name : "";
+	const char *xn = x->name? x->name: "";
+	const char *yn = y->name? y->name: "";
 	return strcmp (xn, yn);
 }
 
-static const char *interop_kind_label (uint8_t kind) {
+static const char *interop_kind_label(uint8_t kind) {
 	switch (kind) {
 	case R2U_INTEROP_REVERSE_PINVOKE: return "MonoPInvokeCallback";
-	case R2U_INTEROP_UNMANAGED_ONLY:  return "UnmanagedCallersOnly";
+	case R2U_INTEROP_UNMANAGED_ONLY: return "UnmanagedCallersOnly";
 	default: return "reverse";
 	}
 }
 
-static int cmd_interop (RCore *core, bool reverse, char mode) {
+static int cmd_interop(RCore *core, bool reverse, char mode) {
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
 	if (!meta) {
@@ -587,13 +578,13 @@ static int cmd_interop (RCore *core, bool reverse, char mode) {
 		pj_o (pj);
 		pj_kb (pj, "ok", true);
 		pj_ki (pj, "version", meta->version);
-		pj_ka (pj, reverse ? "reverse_pinvokes" : "pinvokes");
+		pj_ka (pj, reverse? "reverse_pinvokes": "pinvokes");
 	} else if (mode == 0 && !reverse) {
-		r_cons_printf (core->cons,"# P/Invoke methods (managed -> native), wire version %d\n", meta->version);
-		r_cons_printf (core->cons,"# IMAGE\tMETHOD\tDLL\tENTRY\tFLAGS\tCONFIDENCE\n");
+		r_cons_printf (core->cons, "# P/Invoke methods (managed -> native), wire version %d\n", meta->version);
+		r_cons_printf (core->cons, "# IMAGE\tMETHOD\tDLL\tENTRY\tFLAGS\tCONFIDENCE\n");
 	} else if (mode == 0 && reverse) {
-		r_cons_printf (core->cons,"# Reverse-P/Invoke methods (native -> managed), wire version %d\n", meta->version);
-		r_cons_printf (core->cons,"# IMAGE\tMETHOD\tATTRIBUTE\tFLAGS\tCONFIDENCE\n");
+		r_cons_printf (core->cons, "# Reverse-P/Invoke methods (native -> managed), wire version %d\n", meta->version);
+		r_cons_printf (core->cons, "# IMAGE\tMETHOD\tATTRIBUTE\tFLAGS\tCONFIDENCE\n");
 	}
 
 	for (size_t i = 0; i < n; i++) {
@@ -601,12 +592,12 @@ static int cmd_interop (RCore *core, bool reverse, char mode) {
 		char *attrs = method_attrs_str (it->flags);
 		if (mode == 'j') {
 			pj_o (pj);
-			pj_ks (pj, "image", it->image_name ? it->image_name : "");
-			pj_ks (pj, "method", it->name ? it->name : "");
-			pj_kn (pj, "token", (ut64) it->token);
-			pj_kn (pj, "flags", (ut64) it->flags);
-			pj_kn (pj, "iflags", (ut64) it->iflags);
-			pj_kn (pj, "confidence", (ut64) it->confidence);
+			pj_ks (pj, "image", it->image_name? it->image_name: "");
+			pj_ks (pj, "method", it->name? it->name: "");
+			pj_kn (pj, "token", (ut64)it->token);
+			pj_kn (pj, "flags", (ut64)it->flags);
+			pj_kn (pj, "iflags", (ut64)it->iflags);
+			pj_kn (pj, "confidence", (ut64)it->confidence);
 			if (reverse) {
 				pj_ks (pj, "attribute", interop_kind_label (it->kind));
 			} else {
@@ -625,42 +616,26 @@ static int cmd_interop (RCore *core, bool reverse, char mode) {
 		} else if (mode == '*') {
 			if (it->name) {
 				char flag_buf[1024];
-				const char *prefix = reverse ? "sym.unity.reverse" : "sym.unity";
+				const char *prefix = reverse? "sym.unity.reverse": "sym.unity";
 				if (it->image_name && *it->image_name) {
-					snprintf (flag_buf, sizeof (flag_buf), "%s.%s.%s",
-						prefix, it->image_name, it->name);
+					snprintf (flag_buf, sizeof (flag_buf), "%s.%s.%s", prefix, it->image_name, it->name);
 				} else {
-					snprintf (flag_buf, sizeof (flag_buf), "%s.%s",
-						prefix, it->name);
+					snprintf (flag_buf, sizeof (flag_buf), "%s.%s", prefix, it->name);
 				}
 				r_name_filter (flag_buf, -1);
 				if (reverse) {
-					r_cons_printf (core->cons,"# ReversePInvoke %s [%s]\n",
-						flag_buf, interop_kind_label (it->kind));
+					r_cons_printf (core->cons, "# ReversePInvoke %s [%s]\n", flag_buf, interop_kind_label (it->kind));
 				} else if (it->dll_name) {
-					r_cons_printf (core->cons,"# PInvoke %s -> %s!%s\n",
-						flag_buf, it->dll_name,
-						it->entry_name ? it->entry_name : it->name);
+					r_cons_printf (core->cons, "# PInvoke %s -> %s!%s\n", flag_buf, it->dll_name, it->entry_name? it->entry_name: it->name);
 				} else {
-					r_cons_printf (core->cons,"# PInvoke %s -> <unresolved>\n", flag_buf);
+					r_cons_printf (core->cons, "# PInvoke %s -> <unresolved>\n", flag_buf);
 				}
 			}
 		} else {
 			if (reverse) {
-				r_cons_printf (core->cons,"%s\t%s\t%s\t%s\t%u\n",
-					it->image_name ? it->image_name : "",
-					it->name ? it->name : "",
-					interop_kind_label (it->kind),
-					*attrs ? attrs : "-",
-					(unsigned) it->confidence);
+				r_cons_printf (core->cons, "%s\t%s\t%s\t%s\t%u\n", it->image_name? it->image_name: "", it->name? it->name: "", interop_kind_label (it->kind), *attrs? attrs: "-", (unsigned)it->confidence);
 			} else {
-				r_cons_printf (core->cons,"%s\t%s\t%s\t%s\t%s\t%u\n",
-					it->image_name ? it->image_name : "",
-					it->name ? it->name : "",
-					it->dll_name ? it->dll_name : "<unresolved>",
-					it->entry_name ? it->entry_name : "<default>",
-					*attrs ? attrs : "-",
-					(unsigned) it->confidence);
+				r_cons_printf (core->cons, "%s\t%s\t%s\t%s\t%s\t%u\n", it->image_name? it->image_name: "", it->name? it->name: "", it->dll_name? it->dll_name: "<unresolved>", it->entry_name? it->entry_name: "<default>", *attrs? attrs: "-", (unsigned)it->confidence);
 			}
 		}
 		free (attrs);
@@ -668,13 +643,12 @@ static int cmd_interop (RCore *core, bool reverse, char mode) {
 
 	if (mode == 'j') {
 		pj_end (pj);
-		pj_kn (pj, "count", (ut64) n);
+		pj_kn (pj, "count", (ut64)n);
 		pj_end (pj);
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
 	} else if (mode == 0) {
-		r_cons_printf (core->cons,"# summary: %s=%zu\n",
-			reverse ? "reverse_pinvokes" : "pinvokes", n);
+		r_cons_printf (core->cons, "# summary: %s=%zu\n", reverse? "reverse_pinvokes": "pinvokes", n);
 	}
 	r2unity_free_interop (items, n);
 	close_metadata (meta, buf);
@@ -682,7 +656,7 @@ static int cmd_interop (RCore *core, bool reverse, char mode) {
 }
 
 /* ---------- r2unity-S (SBOM JSON) ---------- */
-static int cmd_sbom (RCore *core) {
+static int cmd_sbom(RCore *core) {
 	const char *metadata_path = resolve_metadata_path (core);
 	const char *exe_path = current_binary_path (core);
 	RBuffer *buf = NULL;
@@ -722,12 +696,12 @@ static int cmd_sbom (RCore *core) {
 	pj_end (pj);
 	pj_ko (pj, "component");
 	pj_ks (pj, "type", "application");
-	pj_ks (pj, "name", exe_path ? exe_path : "unity-build");
+	pj_ks (pj, "name", exe_path? exe_path: "unity-build");
 	pj_ks (pj, "version", unity_range_from_wire (meta->version));
 	pj_ka (pj, "properties");
 	pj_o (pj);
 	pj_ks (pj, "name", "unity.metadata.path");
-	pj_ks (pj, "value", metadata_path ? metadata_path : "");
+	pj_ks (pj, "value", metadata_path? metadata_path: "");
 	pj_end (pj);
 	pj_o (pj);
 	pj_ks (pj, "name", "unity.metadata.wire_version");
@@ -742,19 +716,20 @@ static int cmd_sbom (RCore *core) {
 	pj_ka (pj, "components");
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = (char *) r2unity_get_string (meta, a->aname.culture_idx);
-		const char *nm = name ? name : "";
-		const char *cl = (culture && *culture) ? culture : "neutral";
+		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		char *culture = (char *)r2unity_get_string (meta, a->aname.culture_idx);
+		const char *nm = name? name: "";
+		const char *cl = (culture && *culture)? culture: "neutral";
 		char *img_name_owned = NULL;
 		const char *img = "";
-		if (imgs && a->image_index >= 0 && (size_t) a->image_index < img_count) {
-			img_name_owned = (char *) r2unity_get_string (meta, imgs[a->image_index].nameIndex);
-			if (img_name_owned) img = img_name_owned;
+		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
+			img_name_owned = (char *)r2unity_get_string (meta, imgs[a->image_index].nameIndex);
+			if (img_name_owned) {
+				img = img_name_owned;
+			}
 		}
 		char ver[64];
-		snprintf (ver, sizeof (ver), "%d.%d.%d.%d",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		snprintf (ver, sizeof (ver), "%d.%d.%d.%d", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		char bomref[512];
 		snprintf (bomref, sizeof (bomref), "asm:%s:%s", nm, ver);
 		char purl[512];
@@ -767,8 +742,14 @@ static int cmd_sbom (RCore *core) {
 		pj_ks (pj, "version", ver);
 		pj_ks (pj, "purl", purl);
 		pj_ka (pj, "properties");
-		pj_o (pj); pj_ks (pj, "name", "dotnet.culture"); pj_ks (pj, "value", cl); pj_end (pj);
-		pj_o (pj); pj_ks (pj, "name", "il2cpp.image"); pj_ks (pj, "value", img); pj_end (pj);
+		pj_o (pj);
+		pj_ks (pj, "name", "dotnet.culture");
+		pj_ks (pj, "value", cl);
+		pj_end (pj);
+		pj_o (pj);
+		pj_ks (pj, "name", "il2cpp.image");
+		pj_ks (pj, "value", img);
+		pj_end (pj);
 		pj_end (pj);
 		pj_end (pj);
 		free (name);
@@ -780,13 +761,16 @@ static int cmd_sbom (RCore *core) {
 	pj_ka (pj, "dependencies");
 	for (size_t i = 0; i < asm_count; i++) {
 		Il2CppAssemblyDefinition *a = &asms[i];
-		if (a->referenced_count <= 0 || a->referenced_start < 0) continue;
-		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) continue;
-		char *name = (char *) r2unity_get_string (meta, a->aname.name_idx);
-		const char *nm = name ? name : "";
+		if (a->referenced_count <= 0 || a->referenced_start < 0) {
+			continue;
+		}
+		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
+			continue;
+		}
+		char *name = (char *)r2unity_get_string (meta, a->aname.name_idx);
+		const char *nm = name? name: "";
 		char ver[64];
-		snprintf (ver, sizeof (ver), "%d.%d.%d.%d",
-			a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
+		snprintf (ver, sizeof (ver), "%d.%d.%d.%d", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
 		char bomref[512];
 		snprintf (bomref, sizeof (bomref), "asm:%s:%s", nm, ver);
 		pj_o (pj);
@@ -794,15 +778,15 @@ static int cmd_sbom (RCore *core) {
 		pj_ka (pj, "dependsOn");
 		for (int k = 0; k < a->referenced_count; k++) {
 			int32_t ridx = refs[a->referenced_start + k];
-			if (ridx < 0 || (size_t) ridx >= asm_count) continue;
+			if (ridx < 0 || (size_t)ridx >= asm_count) {
+				continue;
+			}
 			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = (char *) r2unity_get_string (meta, r->aname.name_idx);
+			char *rname = (char *)r2unity_get_string (meta, r->aname.name_idx);
 			char rver[64];
-			snprintf (rver, sizeof (rver), "%d.%d.%d.%d",
-				r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
+			snprintf (rver, sizeof (rver), "%d.%d.%d.%d", r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
 			char rref[512];
-			snprintf (rref, sizeof (rref), "asm:%s:%s",
-				rname ? rname : "", rver);
+			snprintf (rref, sizeof (rref), "asm:%s:%s", rname? rname: "", rver);
 			pj_s (pj, rref);
 			free (rname);
 		}
@@ -824,7 +808,7 @@ static int cmd_sbom (RCore *core) {
 }
 
 /* ---------- dispatcher ---------- */
-static bool r2unity_call (RCorePluginSession *cps, const char *input) {
+static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 	if (!input || !r_str_startswith (input, "r2unity")) {
 		return false;
 	}
@@ -841,7 +825,7 @@ static bool r2unity_call (RCorePluginSession *cps, const char *input) {
 	}
 	rest++;
 	/* "r2unity-" followed by the subcommand letter, optionally a modifier
-	 * ('j' for JSON, '*' for r2 commands), optionally whitespace + args. */
+	 *('j' for JSON, '*' for r2 commands), optionally whitespace + args. */
 	char sub = *rest;
 	char mode = 0;
 	if (sub) {
@@ -880,22 +864,22 @@ static bool r2unity_call (RCorePluginSession *cps, const char *input) {
 	}
 }
 
-static bool r2unity_init (RCorePluginSession *cps) {
+static bool r2unity_init(RCorePluginSession *cps) {
 	RCore *core = cps->core;
 	RConfig *cfg = core->config;
 	r_config_lock (cfg, false);
 	r_config_node_desc (
 		r_config_set (cfg, "r2unity.metadata", ""),
-		"path to global-metadata.dat (empty = auto-detect)");
+			"path to global-metadata.dat (empty = auto-detect)");
 	r_config_node_desc (
 		r_config_set (cfg, "r2unity.library", ""),
-		"path to IL2CPP native library (empty = auto-detect)");
+			"path to IL2CPP native library (empty = auto-detect)");
 	r_config_lock (cfg, true);
 	return true;
 }
 
-static bool r2unity_fini (RCorePluginSession *cps) {
-	(void) cps;
+static bool r2unity_fini(RCorePluginSession *cps) {
+	(void)cps;
 	return true;
 }
 

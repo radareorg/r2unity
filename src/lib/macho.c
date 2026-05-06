@@ -22,15 +22,15 @@ typedef struct {
 	int nsegs;
 } MachO;
 
-static bool macho_load (const char *path, MachO *mo) {
+static bool macho_load(const char *path, MachO *mo) {
 	memset (mo, 0, sizeof (*mo));
 	size_t sz = 0;
-	mo->file = (ut8 *) r_file_slurp (path, &sz);
+	mo->file = (ut8 *)r_file_slurp (path, &sz);
 	if (!mo->file || sz == 0) {
 		R_FREE (mo->file);
 		return false;
 	}
-	mo->filesize = (ut64) sz;
+	mo->filesize = (ut64)sz;
 	ut32 magic = r_read_be32 (mo->file);
 	ut64 off = 0;
 	if (magic == 0xcafebabe) {
@@ -39,7 +39,10 @@ static bool macho_load (const char *path, MachO *mo) {
 		for (ut32 i = 0; i < nfat; i++) {
 			const ut8 *fa = mo->file + 8 + i * 20;
 			ut32 cputype = r_read_be32 (fa + 0);
-			if (cputype == 0x0100000c) { best = i; break; }
+			if (cputype == 0x0100000c) {
+				best = i;
+				break;
+			}
 		}
 		const ut8 *fa = mo->file + 8 + best * 20;
 		off = r_read_be32 (fa + 8);
@@ -59,7 +62,7 @@ static bool macho_load (const char *path, MachO *mo) {
 		ut32 cmd = r_read_le32 (mo->file + co);
 		ut32 cmdsize = r_read_le32 (mo->file + co + 4);
 		if (cmd == 0x19 && cmdsize >= 72) {
-			if (mo->nsegs < (int)(sizeof (mo->segs)/sizeof (mo->segs[0]))) {
+			if (mo->nsegs < (int) (sizeof (mo->segs) / sizeof (mo->segs[0]))) {
 				MachSeg *s = &mo->segs[mo->nsegs++];
 				const ut8 *sp = mo->file + co + 8;
 				memcpy (s->segname, sp, 16);
@@ -73,40 +76,53 @@ static bool macho_load (const char *path, MachO *mo) {
 				}
 			}
 		}
-		co += cmdsize ? cmdsize : 8;
+		co += cmdsize? cmdsize: 8;
 	}
 	return true;
 }
 
-static void macho_free (MachO *mo) {
+static void macho_free(MachO *mo) {
 	R_FREE (mo->file);
 }
 
-static inline bool macho_vm_in_text (MachO *mo, ut64 addr, ut64 *text_lo, ut64 *text_hi) {
+static inline bool macho_vm_in_text(MachO *mo, ut64 addr, ut64 *text_lo, ut64 *text_hi) {
 	ut64 lo = UT64_MAX, hi = 0;
 	for (int i = 0; i < mo->nsegs; i++) {
 		MachSeg *s = &mo->segs[i];
 		bool is_text = (s->maxprot & 0x4) || !strncmp (s->segname, "__TEXT", 6);
 		if (is_text) {
-			if (s->vmaddr < lo) lo = s->vmaddr;
-			if (s->vmaddr + s->vmsize > hi) hi = s->vmaddr + s->vmsize;
+			if (s->vmaddr < lo) {
+				lo = s->vmaddr;
+			}
+			if (s->vmaddr + s->vmsize > hi) {
+				hi = s->vmaddr + s->vmsize;
+			}
 		}
 	}
 	// Fallback: if no exec segment detected, use min/max of all segments
 	if (lo == UT64_MAX || hi <= lo) {
-		lo = UT64_MAX; hi = 0;
+		lo = UT64_MAX;
+		hi = 0;
 		for (int i = 0; i < mo->nsegs; i++) {
 			MachSeg *s = &mo->segs[i];
-			if (s->vmaddr < lo) lo = s->vmaddr;
-			if (s->vmaddr + s->vmsize > hi) hi = s->vmaddr + s->vmsize;
+			if (s->vmaddr < lo) {
+				lo = s->vmaddr;
+			}
+			if (s->vmaddr + s->vmsize > hi) {
+				hi = s->vmaddr + s->vmsize;
+			}
 		}
 	}
-	if (text_lo) *text_lo = lo;
-	if (text_hi) *text_hi = hi;
+	if (text_lo) {
+		*text_lo = lo;
+	}
+	if (text_hi) {
+		*text_hi = hi;
+	}
 	return (addr >= lo && addr < hi);
 }
 
-static inline const ut8 *macho_vm_to_ptr (MachO *mo, ut64 vmaddr) {
+static inline const ut8 *macho_vm_to_ptr(MachO *mo, ut64 vmaddr) {
 	for (int i = 0; i < mo->nsegs; i++) {
 		MachSeg *s = &mo->segs[i];
 		if (vmaddr >= s->vmaddr && vmaddr < s->vmaddr + s->vmsize) {
@@ -122,23 +138,19 @@ static inline const ut8 *macho_vm_to_ptr (MachO *mo, ut64 vmaddr) {
 
 /* Evaluate the table at VA `arrptr` with `count` 8-byte pointers. Entries
  * below text_lo are retried with vm_base added (RVA→VA fallback). */
-static bool macho_probe_table (MachO *mo, ut64 arrptr, ut32 count,
-		ut64 text_lo, ut64 text_hi,
-		ut32 min_seen, ut32 min_good,
-		size_t method_count, ut64 *candidates) {
-	ut32 sample = R_MIN ((ut32) 128, count);
+static bool macho_probe_table(MachO *mo, ut64 arrptr, ut32 count, ut64 text_lo, ut64 text_hi, ut32 min_seen, ut32 min_good, size_t method_count, ut64 *candidates) {
+	ut32 sample = R_MIN ((ut32)128, count);
 	ut32 good = 0, seen = 0;
 	for (ut32 k = 0; k < sample; k++) {
-		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64) k * 8);
+		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64)k * 8);
 		if (!p && mo->vm_base) {
-			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64) k * 8);
+			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64)k * 8);
 		}
 		if (!p) {
 			return false;
 		}
 		ut64 val = r_read_le64 (p);
-		if (val && val < text_lo && mo->vm_base
-			&& (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
+		if (val && val < text_lo && mo->vm_base && (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
 			val += mo->vm_base;
 		}
 		if (val) {
@@ -152,18 +164,17 @@ static bool macho_probe_table (MachO *mo, ut64 arrptr, ut32 count,
 		return false;
 	}
 	memset (candidates, 0, method_count * sizeof (ut64));
-	size_t tocopy = R_MIN ((size_t) count, method_count);
+	size_t tocopy = R_MIN ((size_t)count, method_count);
 	for (size_t m = 0; m < tocopy; m++) {
-		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64) m * 8);
+		const ut8 *p = macho_vm_to_ptr (mo, arrptr + (ut64)m * 8);
 		if (!p && mo->vm_base) {
-			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64) m * 8);
+			p = macho_vm_to_ptr (mo, mo->vm_base + arrptr + (ut64)m * 8);
 		}
 		if (!p) {
 			break;
 		}
 		ut64 val = r_read_le64 (p);
-		if (val && val < text_lo && mo->vm_base
-			&& (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
+		if (val && val < text_lo && mo->vm_base && (val + mo->vm_base) >= text_lo && (val + mo->vm_base) < text_hi) {
 			val += mo->vm_base;
 		}
 		if (val >= text_lo && val < text_hi) {
@@ -173,14 +184,14 @@ static bool macho_probe_table (MachO *mo, ut64 arrptr, ut32 count,
 	return true;
 }
 
-R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs) {
+R_API bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs) {
 	R_RETURN_VAL_IF_FAIL (meta && macho_path && out_ptrs, false);
 	*out_ptrs = NULL;
 	MachO mo;
 	if (!macho_load (macho_path, &mo)) {
 		return false;
 	}
-	size_t method_count = (ut64) meta->methodsSize / sizeof (Il2CppMethodDefinition);
+	size_t method_count = (ut64)meta->methodsSize / sizeof (Il2CppMethodDefinition);
 	if (!method_count) {
 		macho_free (&mo);
 		return false;
@@ -194,16 +205,16 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 	}
 	bool found = false;
 	int ptrsz = 8;
-	ut32 expected = (ut32) R_MAX ((ut64) 64, (ut64) method_count);
-	(void) ptrsz;  /* Mach-O fast path is 64-bit only. */
+	ut32 expected = (ut32)R_MAX ((ut64)64, (ut64)method_count);
+	(void)ptrsz; /* Mach-O fast path is 64-bit only. */
 	/* Pass 0: CodeRegistration-shaped pair {count32, pad, ptr64}.
 	 * Pass 1: generic {count32, ptr64} with expected-count bounds and
 	 * stricter sample-fraction thresholds. */
 	for (int pass = 0; pass < 2 && !found; pass++) {
-		const ut32 min_count = (pass == 0) ? 32 : 64;
+		const ut32 min_count = (pass == 0)? 32: 64;
 		for (int i = 0; i < mo.nsegs && !found; i++) {
 			MachSeg *s = &mo.segs[i];
-			bool is_data = (s->maxprot & 0x1) && !(s->maxprot & 0x4);
+			bool is_data = (s->maxprot & 0x1) && ! (s->maxprot & 0x4);
 			if (!is_data || s->filesize < 16) {
 				continue;
 			}
@@ -217,14 +228,12 @@ R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char
 					continue;
 				}
 				ut64 arrptr = r_read_le64 (buf + off + 8);
-				ut32 sample = R_MIN ((ut32) 128, cnt);
-				ut32 min_seen = (pass == 0) ? 8 : sample / 2;
-				ut32 min_good = (pass == 0) ? 8 : (sample * 3) / 4;
-				if (macho_probe_table (&mo, arrptr, cnt, text_lo, text_hi,
-						min_seen, min_good, method_count, candidates)) {
+				ut32 sample = R_MIN ((ut32)128, cnt);
+				ut32 min_seen = (pass == 0)? 8: sample / 2;
+				ut32 min_good = (pass == 0)? 8: (sample * 3) / 4;
+				if (macho_probe_table (&mo, arrptr, cnt, text_lo, text_hi, min_seen, min_good, method_count, candidates)) {
 					if (r2unity_is_debug ()) {
-						fprintf (stderr, "[r2unity/macho] pass=%d arrptr=0x%"PFMT64x" cnt=%u\n",
-							pass, arrptr, cnt);
+						fprintf (stderr, "[r2unity/macho] pass=%d arrptr=0x%" PFMT64x " cnt=%u\n", pass, arrptr, cnt);
 					}
 					found = true;
 					break;

@@ -303,20 +303,20 @@ typedef struct {
 	uint32_t public_key_idx;
 	uint32_t hash_value_idx; /* 0 when not present on disk (wire >= 24.4) */
 	uint32_t hash_alg;
-	int32_t  hash_len;
+	int32_t hash_len;
 	uint32_t flags;
-	int32_t  major;
-	int32_t  minor;
-	int32_t  build;
-	int32_t  revision;
-	uint8_t  public_key_token[8];
+	int32_t major;
+	int32_t minor;
+	int32_t build;
+	int32_t revision;
+	uint8_t public_key_token[8];
 } Il2CppAssemblyNameDefinition;
 
 typedef struct {
-	int32_t  image_index;
-	uint32_t token;            /* 0 when not present (wire <= 24.0) */
-	int32_t  referenced_start;
-	int32_t  referenced_count;
+	int32_t image_index;
+	uint32_t token; /* 0 when not present (wire <= 24.0) */
+	int32_t referenced_start;
+	int32_t referenced_count;
 	Il2CppAssemblyNameDefinition aname;
 } Il2CppAssemblyDefinition;
 
@@ -324,54 +324,54 @@ typedef struct {
 #define IL2CPP_METHOD_ATTRIBUTE_PINVOKE_IMPL 0x2000
 
 enum {
-	R2U_INTEROP_PINVOKE         = 1, /* managed -> native, [DllImport] */
+	R2U_INTEROP_PINVOKE = 1, /* managed -> native, [DllImport] */
 	R2U_INTEROP_REVERSE_PINVOKE = 2, /* native -> managed, [MonoPInvokeCallback] */
-	R2U_INTEROP_UNMANAGED_ONLY  = 3, /* [UnmanagedCallersOnly] (.NET 5+) */
-	R2U_INTEROP_INTEROP_DATA    = 4  /* Il2CppInteropData entry (opaque) */
+	R2U_INTEROP_UNMANAGED_ONLY = 3, /* [UnmanagedCallersOnly] (.NET 5+) */
+	R2U_INTEROP_INTEROP_DATA = 4 /* Il2CppInteropData entry (opaque) */
 };
 
 /* A single P/Invoke or reverse-P/Invoke entry.
  * String fields are owned by the struct and freed by r2unity_free_interop. */
 typedef struct {
-	int32_t  method_index;   /* -1 for anonymous native wrapper */
-	uint32_t token;          /* 0 if not applicable */
-	int32_t  image_index;    /* -1 if unresolved */
-	uint16_t flags;          /* copy of methodDef.flags */
-	uint16_t iflags;         /* copy of methodDef.iflags */
-	char    *name;           /* "Ns.Class.Method" or NULL */
-	char    *image_name;     /* "Assembly-CSharp" or NULL */
-	char    *dll_name;       /* NULL if unrecovered */
-	char    *entry_name;     /* NULL if unrecovered (=> method name) */
-	ut64     wrapper_va;     /* 0 if no native wrapper */
-	uint32_t wrapper_index;  /* global reversePInvokeWrappers index, or UINT32_MAX */
-	uint8_t  kind;           /* R2U_INTEROP_* */
-	uint8_t  confidence;     /* 0..100 */
+	int32_t method_index; /* -1 for anonymous native wrapper */
+	uint32_t token; /* 0 if not applicable */
+	int32_t image_index; /* -1 if unresolved */
+	uint16_t flags; /* copy of methodDef.flags */
+	uint16_t iflags; /* copy of methodDef.iflags */
+	char *name; /* "Ns.Class.Method" or NULL */
+	char *image_name; /* "Assembly-CSharp" or NULL */
+	char *dll_name; /* NULL if unrecovered */
+	char *entry_name; /* NULL if unrecovered (=> method name) */
+	ut64 wrapper_va; /* 0 if no native wrapper */
+	uint32_t wrapper_index; /* global reversePInvokeWrappers index, or UINT32_MAX */
+	uint8_t kind; /* R2U_INTEROP_* */
+	uint8_t confidence; /* 0..100 */
 } R2UnityInterop;
 
-R_API R2UnityMetadata *r2unity_parse_metadata (RBuffer *buf);
-R_API void r2unity_free_metadata (R2UnityMetadata *meta);
-R_API const char *r2unity_get_string (R2UnityMetadata *meta, uint32_t index);
-R_API Il2CppStringLiteral *r2unity_get_string_literals (R2UnityMetadata *meta, size_t *count);
-R_API bool r2unity_read_string_literal (R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len);
-R_API Il2CppTypeDefinition *r2unity_get_type_definitions (R2UnityMetadata *meta, size_t *count);
-R_API Il2CppMethodDefinition *r2unity_get_method_definitions (R2UnityMetadata *meta, size_t *count);
-R_API Il2CppImageDefinition *r2unity_get_images (R2UnityMetadata *meta, size_t *count);
-R_API Il2CppAssemblyDefinition *r2unity_get_assemblies (R2UnityMetadata *meta, size_t *count);
-R_API int32_t *r2unity_get_referenced_assemblies (R2UnityMetadata *meta, size_t *count);
-R_API R2UnityInterop *r2unity_enumerate_pinvokes (R2UnityMetadata *meta, size_t *count);
+R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf);
+R_API void r2unity_free_metadata(R2UnityMetadata *meta);
+R_API const char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index);
+R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, size_t *count);
+R_API bool r2unity_read_string_literal(R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len);
+R_API Il2CppTypeDefinition *r2unity_get_type_definitions(R2UnityMetadata *meta, size_t *count);
+R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *meta, size_t *count);
+R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count);
+R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, size_t *count);
+R_API int32_t *r2unity_get_referenced_assemblies(R2UnityMetadata *meta, size_t *count);
+R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *count);
 /* Reverse-P/Invoke (native -> managed) enumeration via v29+ attribute BLOB.
  * Returns methods tagged with [MonoPInvokeCallback] or [UnmanagedCallersOnly].
  * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
-R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes (R2UnityMetadata *meta, size_t *count);
-R_API void r2unity_free_interop (R2UnityInterop *items, size_t count);
+R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes(R2UnityMetadata *meta, size_t *count);
+R_API void r2unity_free_interop(R2UnityInterop *items, size_t count);
 /* Simplified API: use format-specific finders, or manual read stub. */
-R_API bool r2unity_read_method_pointers_at (R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
-R_API bool r2unity_find_method_pointers_macho (R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
-R_API bool r2unity_find_method_pointers_elf (R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs);
-R_API bool r2unity_find_method_pointers_pe (R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs);
+R_API bool r2unity_read_method_pointers_at(R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
+R_API bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
+R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs);
+R_API bool r2unity_find_method_pointers_pe(R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs);
 
-R_API void r2unity_set_debug (bool v);
-R_API bool r2unity_is_debug (void);
+R_API void r2unity_set_debug(bool v);
+R_API bool r2unity_is_debug(void);
 
 /* Companion-file discovery.
  *
@@ -382,15 +382,15 @@ R_API bool r2unity_is_debug (void);
  * companion-file layout. Returns NULL if no layout matches or
  * `global-metadata.dat` cannot be located. */
 typedef struct {
-	char *platform;        /* "ios", "macos", "windows", "linux", "android", "fixture" */
+	char *platform; /* "ios", "macos", "windows", "linux", "android", "fixture" */
 	char *main_executable; /* absolute path of the input file */
-	char *il2cpp_binary;   /* UnityFramework / GameAssembly.* / libil2cpp.so — may be NULL */
-	char *metadata;        /* global-metadata.dat (always set when the function succeeds) */
-	char *data_dir;        /* root Data folder — may be NULL */
+	char *il2cpp_binary; /* UnityFramework / GameAssembly.* / libil2cpp.so — may be NULL */
+	char *metadata; /* global-metadata.dat (always set when the function succeeds) */
+	char *data_dir; /* root Data folder — may be NULL */
 } R2UnityPaths;
 
-R_API R2UnityPaths *r2unity_detect_paths (const char *main_exe_path);
-R_API void r2unity_free_paths (R2UnityPaths *p);
-R_API const char *r2unity_platform_il2cpp_name (const char *platform);
+R_API R2UnityPaths *r2unity_detect_paths(const char *main_exe_path);
+R_API void r2unity_free_paths(R2UnityPaths *p);
+R_API const char *r2unity_platform_il2cpp_name(const char *platform);
 
 #endif
