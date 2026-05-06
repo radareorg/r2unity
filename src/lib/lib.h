@@ -4,7 +4,44 @@
 #include <r_util.h>
 
 #define IL2CPP_MAGIC 0xFAB11BAF
-#define R2UNITY_METADATA_SECTION_COUNT 31
+#define R2UNITY_METADATA_BASE_SECTION_COUNT 31
+#define R2UNITY_METADATA_SECTION_COUNT 33
+
+typedef enum {
+	R2U_SEC_STRING_LITERALS,
+	R2U_SEC_STRING_LITERAL_DATA,
+	R2U_SEC_STRINGS,
+	R2U_SEC_EVENTS,
+	R2U_SEC_PROPERTIES,
+	R2U_SEC_METHODS,
+	R2U_SEC_PARAMETER_DEFAULT_VALUES,
+	R2U_SEC_FIELD_DEFAULT_VALUES,
+	R2U_SEC_FIELD_AND_PARAMETER_DEFAULT_VALUE_DATA,
+	R2U_SEC_FIELD_MARSHALED_SIZES,
+	R2U_SEC_PARAMETERS,
+	R2U_SEC_FIELDS,
+	R2U_SEC_GENERIC_PARAMETERS,
+	R2U_SEC_GENERIC_PARAMETER_CONSTRAINTS,
+	R2U_SEC_GENERIC_CONTAINERS,
+	R2U_SEC_NESTED_TYPES,
+	R2U_SEC_INTERFACES,
+	R2U_SEC_VTABLE_METHODS,
+	R2U_SEC_INTERFACE_OFFSETS,
+	R2U_SEC_TYPE_DEFINITIONS,
+	R2U_SEC_IMAGES,
+	R2U_SEC_ASSEMBLIES,
+	R2U_SEC_FIELD_REFS,
+	R2U_SEC_REFERENCED_ASSEMBLIES,
+	R2U_SEC_ATTRIBUTE_DATA,
+	R2U_SEC_ATTRIBUTE_DATA_RANGES,
+	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_TYPES,
+	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_RANGES,
+	R2U_SEC_WINDOWS_RUNTIME_TYPE_NAMES,
+	R2U_SEC_WINDOWS_RUNTIME_STRINGS,
+	R2U_SEC_EXPORTED_TYPE_DEFINITIONS,
+	R2U_SEC_RGCTX_ENTRIES,
+	R2U_SEC_RGCTX_ENTRIES_DATA
+} R2UMetadataSectionId;
 
 typedef struct {
 	uint32_t offset;
@@ -413,6 +450,11 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *
  * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
 R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes(R2UnityMetadata *meta, size_t *count);
 R_API void r2unity_free_interop(R2UnityInterop *items, size_t count);
+R_API const char *r2unity_metadata_section_name(R2UMetadataSectionId id);
+R_API bool r2unity_metadata_section(R2UnityMetadata *meta, R2UMetadataSectionId id, Il2CppMetadataSection *section);
+R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadataSectionId id);
+R_API ut64 r2unity_metadata_section_count(R2UnityMetadata *meta, R2UMetadataSectionId id);
+R_API ut64 r2unity_metadata_header_size(R2UnityMetadata *meta);
 /* Simplified API: use format-specific finders, or manual read stub. */
 R_API bool r2unity_read_method_pointers_at(R2UnityMetadata *meta, const char *exe_path, ut64 addr, size_t count, ut64 **out_ptrs);
 R_API bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);

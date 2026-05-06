@@ -1,13 +1,19 @@
 EXEC = r2unity
-PLUGIN = src/r2/core_r2unity.$(SOEXT)
+CORE_PLUGIN = src/r2/core_r2unity.$(SOEXT)
+BIN_PLUGIN = src/r2/bin_r2unity.$(SOEXT)
+PLUGINS = $(CORE_PLUGIN) $(BIN_PLUGIN)
 CC = gcc
 
 CFLAGS = -Wall -Wextra -g $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
 LDFLAGS = $(shell pkg-config --libs r_util 2>/dev/null || echo "")
 
 # r_core plugin flags (full radare2)
-PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_core 2>/dev/null || echo "")
-PLUGIN_LDFLAGS = $(shell pkg-config --libs r_core 2>/dev/null || echo "")
+CORE_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_core 2>/dev/null || echo "")
+CORE_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_core 2>/dev/null || echo "")
+
+# r_bin plugin flags
+BIN_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_bin 2>/dev/null || echo "")
+BIN_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_bin 2>/dev/null || echo "")
 
 SOEXT = $(shell r2 -H R2_LIBEXT)
 ifeq ($(SOEXT),dylib)
@@ -28,16 +34,17 @@ R2PM_BINDIR=$(shell r2pm -H R2PM_BINDIR)
 
 all: $(EXEC)
 
-plugin: $(PLUGIN)
+plugin: $(PLUGINS)
 
-install-plugin: $(PLUGIN)
+install-plugin: $(PLUGINS)
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	mkdir -p "$(R2_USER_PLUGINS)"
-	cp $(PLUGIN) "$(R2_USER_PLUGINS)/"
+	cp $(PLUGINS) "$(R2_USER_PLUGINS)/"
 
 uninstall-plugin:
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	rm -f "$(R2_USER_PLUGINS)/core_r2unity.$(SOEXT)"
+	rm -f "$(R2_USER_PLUGINS)/bin_r2unity.$(SOEXT)"
 
 fmt:
 	clang-format-radare2 src/**/*.c
@@ -54,14 +61,17 @@ user-uninstall: uninstall-plugin
 $(EXEC): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
-$(PLUGIN): src/r2/core_r2unity.c $(LIB_SRCS)
-	$(CC) $(PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(PLUGIN_LDFLAGS)
+$(CORE_PLUGIN): src/r2/core_r2unity.c $(LIB_SRCS)
+	$(CC) $(CORE_PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(CORE_PLUGIN_LDFLAGS)
+
+$(BIN_PLUGIN): src/r2/bin_r2unity.c $(LIB_SRCS)
+	$(CC) $(BIN_PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(BIN_PLUGIN_LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(EXEC) $(OBJS) $(PLUGIN)
+	rm -f $(EXEC) $(OBJS) $(PLUGINS)
 
 
 .PHONY: all clean plugin install-plugin uninstall-plugin fmt

@@ -4,6 +4,10 @@
 # Build artifacts
 *.o
 /r2unity
+/src/r2/*.dylib
+/src/r2/*.so
+/src/r2/*.dll
+*.dSYM/
 
 # Debian packaging artifacts
 /dist/debian/*.deb

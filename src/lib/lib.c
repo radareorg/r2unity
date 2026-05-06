@@ -13,39 +13,41 @@ R_API bool r2unity_is_debug(void) {
 	return g_debug;
 }
 
-typedef enum {
-	R2U_SEC_STRING_LITERALS,
-	R2U_SEC_STRING_LITERAL_DATA,
-	R2U_SEC_STRINGS,
-	R2U_SEC_EVENTS,
-	R2U_SEC_PROPERTIES,
-	R2U_SEC_METHODS,
-	R2U_SEC_PARAMETER_DEFAULT_VALUES,
-	R2U_SEC_FIELD_DEFAULT_VALUES,
-	R2U_SEC_FIELD_AND_PARAMETER_DEFAULT_VALUE_DATA,
-	R2U_SEC_FIELD_MARSHALED_SIZES,
-	R2U_SEC_PARAMETERS,
-	R2U_SEC_FIELDS,
-	R2U_SEC_GENERIC_PARAMETERS,
-	R2U_SEC_GENERIC_PARAMETER_CONSTRAINTS,
-	R2U_SEC_GENERIC_CONTAINERS,
-	R2U_SEC_NESTED_TYPES,
-	R2U_SEC_INTERFACES,
-	R2U_SEC_VTABLE_METHODS,
-	R2U_SEC_INTERFACE_OFFSETS,
-	R2U_SEC_TYPE_DEFINITIONS,
-	R2U_SEC_IMAGES,
-	R2U_SEC_ASSEMBLIES,
-	R2U_SEC_FIELD_REFS,
-	R2U_SEC_REFERENCED_ASSEMBLIES,
-	R2U_SEC_ATTRIBUTE_DATA,
-	R2U_SEC_ATTRIBUTE_DATA_RANGES,
-	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_TYPES,
-	R2U_SEC_UNRESOLVED_INDIRECT_CALL_PARAMETER_RANGES,
-	R2U_SEC_WINDOWS_RUNTIME_TYPE_NAMES,
-	R2U_SEC_WINDOWS_RUNTIME_STRINGS,
-	R2U_SEC_EXPORTED_TYPE_DEFINITIONS
-} R2UMetadataSectionId;
+static const char *metadata_section_names[R2UNITY_METADATA_SECTION_COUNT] = {
+	"string_literals",
+	"string_literal_data",
+	"strings",
+	"events",
+	"properties",
+	"methods",
+	"parameter_default_values",
+	"field_default_values",
+	"field_and_parameter_default_value_data",
+	"field_marshaled_sizes",
+	"parameters",
+	"fields",
+	"generic_parameters",
+	"generic_parameter_constraints",
+	"generic_containers",
+	"nested_types",
+	"interfaces",
+	"vtable_methods",
+	"interface_offsets",
+	"type_definitions",
+	"images",
+	"assemblies",
+	"field_refs",
+	"referenced_assemblies",
+	"attribute_data",
+	"attribute_data_ranges",
+	"unresolved_indirect_call_parameter_types",
+	"unresolved_indirect_call_parameter_ranges",
+	"windows_runtime_type_names",
+	"windows_runtime_strings",
+	"exported_type_definitions",
+	"rgctx_entries",
+	"rgctx_entries_data"
+};
 
 static int index_size_from_count(uint32_t count) {
 	if (count <= 0xff) {
@@ -141,6 +143,14 @@ static void init_legacy_sections(R2UnityMetadata *meta) {
 	set_section (&s[R2U_SEC_WINDOWS_RUNTIME_TYPE_NAMES], h->windowsRuntimeTypeNamesOffset, h->windowsRuntimeTypeNamesSize);
 	set_section (&s[R2U_SEC_WINDOWS_RUNTIME_STRINGS], h->windowsRuntimeStringsOffset, h->windowsRuntimeStringsSize);
 	set_section (&s[R2U_SEC_EXPORTED_TYPE_DEFINITIONS], h->exportedTypeDefinitionsOffset, h->exportedTypeDefinitionsSize);
+	if (meta->version >= 27 && meta->version < 29) {
+		const Il2CppGlobalMetadataHeader_v27 *h27 = &meta->header.v27;
+		set_section (&s[R2U_SEC_RGCTX_ENTRIES], h27->rgctxEntriesOffset, h27->rgctxEntriesSize);
+	} else if (meta->version >= 29) {
+		const Il2CppGlobalMetadataHeader_v29 *h29 = &meta->header.v29;
+		set_section (&s[R2U_SEC_RGCTX_ENTRIES], h29->rgctxEntriesOffset, h29->rgctxEntriesSize);
+		set_section (&s[R2U_SEC_RGCTX_ENTRIES_DATA], h29->rgctxEntriesDataOffset, h29->rgctxEntriesDataSize);
+	}
 }
 
 static ut8 *read_metadata_table(R2UnityMetadata *meta, R2UMetadataSectionId id, ut64 entry, size_t *count) {
@@ -166,6 +176,51 @@ static ut8 *read_metadata_table(R2UnityMetadata *meta, R2UMetadataSectionId id, 
 		return NULL;
 	}
 	return buf;
+}
+
+static ut64 string_literal_entry_size(R2UnityMetadata *meta) {
+	return meta->version <= 31? 8: 4;
+}
+
+static ut64 type_definition_entry_size(R2UnityMetadata *meta) {
+	const bool compact_indices = (meta->version >= 35);
+	const bool has_element_type = (meta->version <= 31);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const int generic_container_size = compact_indices? meta->genericContainerIndexSize: 4;
+	return 4 + 4
+		+ type_index_size + type_index_size + type_index_size
+		+ (has_element_type? 4: 0)
+		+ generic_container_size
+		+ 4 + 32 + 16 + 4 + 4;
+}
+
+static ut64 method_definition_entry_size(R2UnityMetadata *meta) {
+	const bool has_return_parameter = (meta->version >= 31);
+	const bool compact_indices = (meta->version >= 35);
+	const int type_definition_size = compact_indices? meta->typeDefinitionIndexSize: 4;
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const int parameter_index_size = meta->version >= 39? meta->parameterIndexSize: 4;
+	const int generic_container_size = compact_indices? meta->genericContainerIndexSize: 4;
+	return 4
+		+ type_definition_size
+		+ type_index_size
+		+ (has_return_parameter? 4: 0)
+		+ parameter_index_size
+		+ generic_container_size
+		+ 4 + 2 + 2 + 2 + 2;
+}
+
+static ut64 image_definition_entry_size(R2UnityMetadata *meta) {
+	const bool compact_indices = (meta->version >= 35);
+	const int type_definition_size = compact_indices? meta->typeDefinitionIndexSize: 4;
+	return 4 + 4 + type_definition_size + 4
+		+ type_definition_size + 4 + 4 + 4 + 4 + 4;
+}
+
+static ut64 field_definition_entry_size(R2UnityMetadata *meta) {
+	const bool compact_indices = (meta->version >= 35);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	return 4 + type_index_size + 4;
 }
 
 /* Detect v24.0 vs v24.1+ (both land on disk as version==24).
@@ -249,7 +304,8 @@ R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf) {
 		hdr_words[i] = r_read_le32 (&hdr_words[i]);
 	}
 	if (version >= 38) {
-		memcpy (meta->sections, &meta->header.v38.stringLiterals, sizeof (meta->sections));
+		memcpy (meta->sections, &meta->header.v38.stringLiterals,
+			sizeof (Il2CppMetadataSection) * R2UNITY_METADATA_BASE_SECTION_COUNT);
 		Il2CppMetadataSection *s = meta->sections;
 		if (s[R2U_SEC_PARAMETERS].count) {
 			uint32_t param_entry = s[R2U_SEC_PARAMETERS].size / s[R2U_SEC_PARAMETERS].count;
@@ -310,6 +366,87 @@ R_API void r2unity_free_metadata(R2UnityMetadata *meta) {
 	r_unref (meta->strings);
 	r_unref (meta->string_literals);
 	R_FREE (meta);
+}
+
+R_API const char *r2unity_metadata_section_name(R2UMetadataSectionId id) {
+	if (id < 0 || id >= R2UNITY_METADATA_SECTION_COUNT) {
+		return NULL;
+	}
+	return metadata_section_names[id];
+}
+
+R_API bool r2unity_metadata_section(R2UnityMetadata *meta, R2UMetadataSectionId id, Il2CppMetadataSection *section) {
+	R_RETURN_VAL_IF_FAIL (meta && section, false);
+	if (id < 0 || id >= R2UNITY_METADATA_SECTION_COUNT) {
+		return false;
+	}
+	*section = meta->sections[id];
+	return true;
+}
+
+R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadataSectionId id) {
+	R_RETURN_VAL_IF_FAIL (meta, 0);
+	if (id < 0 || id >= R2UNITY_METADATA_SECTION_COUNT) {
+		return 0;
+	}
+	Il2CppMetadataSection sec = meta->sections[id];
+	if (sec.count) {
+		return sec.size / sec.count;
+	}
+	switch (id) {
+	case R2U_SEC_STRING_LITERALS:
+		return string_literal_entry_size (meta);
+	case R2U_SEC_METHODS:
+		return method_definition_entry_size (meta);
+	case R2U_SEC_FIELDS:
+		return field_definition_entry_size (meta);
+	case R2U_SEC_TYPE_DEFINITIONS:
+		return type_definition_entry_size (meta);
+	case R2U_SEC_IMAGES:
+		return image_definition_entry_size (meta);
+	case R2U_SEC_ASSEMBLIES: {
+		size_t image_count = 0;
+		Il2CppImageDefinition *images = r2unity_get_images (meta, &image_count);
+		R_FREE (images);
+		return image_count? sec.size / image_count: 0;
+	}
+	case R2U_SEC_REFERENCED_ASSEMBLIES:
+	case R2U_SEC_NESTED_TYPES:
+	case R2U_SEC_INTERFACES:
+	case R2U_SEC_VTABLE_METHODS:
+	case R2U_SEC_EXPORTED_TYPE_DEFINITIONS:
+	case R2U_SEC_RGCTX_ENTRIES:
+		return 4;
+	default:
+		return 0;
+	}
+}
+
+R_API ut64 r2unity_metadata_section_count(R2UnityMetadata *meta, R2UMetadataSectionId id) {
+	R_RETURN_VAL_IF_FAIL (meta, 0);
+	if (id < 0 || id >= R2UNITY_METADATA_SECTION_COUNT) {
+		return 0;
+	}
+	Il2CppMetadataSection sec = meta->sections[id];
+	if (sec.count) {
+		return sec.count;
+	}
+	ut64 entry = r2unity_metadata_section_entry_size (meta, id);
+	return entry? sec.size / entry: 0;
+}
+
+R_API ut64 r2unity_metadata_header_size(R2UnityMetadata *meta) {
+	R_RETURN_VAL_IF_FAIL (meta, 0);
+	if (meta->version >= 38) {
+		return sizeof (Il2CppGlobalMetadataHeader_v38);
+	}
+	if (meta->version < 27) {
+		return sizeof (Il2CppGlobalMetadataHeader_v24);
+	}
+	if (meta->version < 29) {
+		return sizeof (Il2CppGlobalMetadataHeader_v27);
+	}
+	return sizeof (Il2CppGlobalMetadataHeader_v29);
 }
 
 R_API const char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index) {
