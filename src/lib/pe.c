@@ -1,3 +1,5 @@
+/* r2unity - MIT - Copyright 2025-2026 - pancake */
+
 // Minimal PE parser for r2unity (GameAssembly.dll on Windows, GameAssembly.dll on UWP).
 // PE .dll images are already relocated at link time (preferred image base is
 // concrete), so no relocation fixup is required — pointers in .data / .rdata

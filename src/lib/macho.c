@@ -1,3 +1,5 @@
+/* r2unity - MIT - Copyright 2025-2026 - pancake */
+
 // Fast Mach-O parser for r2unity
 #define R_LOG_ORIGIN "r2unity.macho"
 #include "lib.h"

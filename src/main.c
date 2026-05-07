@@ -1,3 +1,5 @@
+/* r2unity - MIT - Copyright 2025-2026 - pancake */
+
 #define R_LOG_ORIGIN "r2unity"
 
 #include <stdio.h>

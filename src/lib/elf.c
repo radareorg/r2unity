@@ -1,3 +1,5 @@
+/* r2unity - MIT - Copyright 2025-2026 - pancake */
+
 // Fast ELF parser for r2unity
 #define R_LOG_ORIGIN "r2unity.elf"
 #include "lib.h"
