@@ -32,6 +32,14 @@ make plugin
 make user-install
 ```
 
+Or with Meson:
+
+```sh
+meson setup build
+meson compile -C build
+meson install -C build
+```
+
 Most users can install it through r2pm:
 
 ```sh
@@ -40,6 +48,9 @@ r2pm -ci r2unity
 
 `make` builds the CLI. `make plugin` builds `core_r2unity` and `bin_r2unity`.
 `make user-install` installs both the CLI and plugins for the current user.
+Meson builds the CLI by default, matching `make`. Use `-Dplugins=enabled` to
+build the radare2 plugins too, or `-Dr2_plugindir=/path/to/plugins` to override
+the plugin install directory.
 
 ## CLI
 

@@ -4,6 +4,8 @@
 # Build artifacts
 *.o
 /r2unity
+/build/
+/builddir/
 /src/r2/*.dylib
 /src/r2/*.so
 /src/r2/*.dll
@@ -19,4 +21,3 @@
 
 # Third-party reference checkouts (radare2, il2cpp dumper, etc.)
 /third_party/
-

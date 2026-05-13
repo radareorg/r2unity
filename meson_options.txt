@@ -1,0 +1,13 @@
+option(
+  'plugins',
+  type: 'feature',
+  value: 'disabled',
+  description: 'Build the radare2 core and bin plugins',
+)
+
+option(
+  'r2_plugindir',
+  type: 'string',
+  value: '',
+  description: 'Plugin install directory; when empty, Meson uses `r2 -H R2_USER_PLUGINS` if available',
+)

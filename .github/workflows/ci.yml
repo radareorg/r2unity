@@ -32,6 +32,35 @@ jobs:
       - name: Build plugin
         run: make plugin
 
+  meson:
+    name: Meson (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Install Meson
+        run: |
+          python3 -m pip install --user meson ninja
+          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
+
+      - name: Install radare2
+        id: r2
+        uses: radareorg/github-actions@v1
+
+      - name: Configure
+        run: meson setup build
+
+      - name: Build
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs
+
   debian:
     name: Build Debian package
     runs-on: ubuntu-latest
