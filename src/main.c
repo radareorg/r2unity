@@ -589,7 +589,9 @@ static bool find_method_pointers_fast(R2UnityMetadata *meta, const char *path, u
 	ut8 magic[4] = { 0 };
 	FILE *fp = fopen (path, "rb");
 	if (fp) {
-		(void)fread (magic, 1, 4, fp);
+		if (fread (magic, 1, sizeof (magic), fp) != sizeof (magic)) {
+			memset (magic, 0, sizeof (magic));
+		}
 		fclose (fp);
 	}
 	if (!memcmp (magic, "\x7f"

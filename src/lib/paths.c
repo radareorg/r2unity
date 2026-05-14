@@ -3,6 +3,7 @@
 #define R_LOG_ORIGIN "r2unity.paths"
 
 #include "lib.h"
+#include <strings.h>
 #include <r_util.h>
 
 static bool str_ieq(const char *a, const char *b) {

@@ -9,6 +9,14 @@ project(
   ],
 )
 
+add_project_arguments(
+  [
+    '-D_DEFAULT_SOURCE',
+    '-D_POSIX_C_SOURCE=200809L',
+  ],
+  language: 'c',
+)
+
 r_util_dep = dependency('r_util')
 
 conf = configuration_data()
