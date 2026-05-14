@@ -1,4 +1,9 @@
 EXEC = r2unity
+CONFIG_H = r2unity_config.h
+PROJECT_VERSION = $(shell cat meson.build|grep 'version'|cut -d "'" -f2|head -n1)
+ifeq ($(PROJECT_VERSION),)
+	error
+endif
 
 SOEXT = $(shell r2 -H R2_LIBEXT)
 ifeq ($(SOEXT),dylib)
@@ -12,7 +17,7 @@ BIN_PLUGIN = src/r2/bin_r2unity.$(SOEXT)
 PLUGINS = $(CORE_PLUGIN) $(BIN_PLUGIN)
 CC = gcc
 
-CFLAGS = -Wall -Wextra -g $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
+CFLAGS = -Wall -Wextra -g -I. $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
 LDFLAGS = $(shell pkg-config --libs r_util 2>/dev/null || echo "")
 
 # r_core plugin flags (full radare2)
@@ -60,6 +65,12 @@ user-uninstall: uninstall-plugin
 $(EXEC): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
+$(CONFIG_H): meson.build
+	echo '#define R2UNITY_VERSION "$(PROJECT_VERSION)"\n' > $@
+
+$(CLI_OBJS): %.o: %.c $(CONFIG_H)
+	$(CC) $(CFLAGS) -c -o $@ $<
+
 $(CORE_PLUGIN): src/r2/core_r2unity.c $(LIB_SRCS)
 	$(CC) $(CORE_PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(CORE_PLUGIN_LDFLAGS)
 
@@ -70,7 +81,7 @@ $(BIN_PLUGIN): src/r2/bin_r2unity.c $(LIB_SRCS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(EXEC) $(OBJS) $(PLUGINS)
+	rm -f $(EXEC) $(OBJS) $(PLUGINS) $(CONFIG_H)
 
 
 .PHONY: all clean plugin install-plugin uninstall-plugin fmt

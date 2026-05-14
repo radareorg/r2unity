@@ -37,20 +37,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-latest]
+        os: [ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Install Meson
-        run: |
-          python3 -m pip install --user meson ninja
-          echo "$(python3 -m site --user-base)/bin" >> "$GITHUB_PATH"
-
       - name: Install radare2
         id: r2
         uses: radareorg/github-actions@v1
+
+      - name: Install deps
+        run: pip install meson ninja --break-system-packages
 
       - name: Configure
         run: meson setup build

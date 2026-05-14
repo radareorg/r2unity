@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <r2unity_config.h>
 #include "lib/lib.h"
 
 /* System.Reflection.MethodAttributes subset. Returns an owned string
@@ -70,7 +71,8 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"  -r            Emit r2 script commands (flags + comments); pairs with -P\n"
 		"  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)\n"
 		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
-		"  -v            Verbose debug tracing on stderr\n"
+		"  -V            Verbose debug tracing on stderr\n"
+		"  -v            Show version and exit\n"
 		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
 		"\n"
 		"Arguments:\n"
@@ -684,13 +686,16 @@ int main(int argc, char *argv[]) {
 	bool string_literals = false;
 	bool detect_paths = false;
 	int opt;
-	while ((opt = getopt (argc, argv, "hjrqfvSPRDzl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "hjrqfVvSPRDzl:a:c:")) != -1) {
 		switch (opt) {
 		case 'j': json_one_line = true; break;
 		case 'r': r2_script = true; break;
 		case 'q': quiet = true; break;
 		case 'f': fast = true; break;
-		case 'v': debug = true; break;
+		case 'V': debug = true; break;
+		case 'v':
+			printf ("r2unity %s\n", R2UNITY_VERSION);
+			return 0;
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
 		case 'R': reverse_pinvokes = true; break;

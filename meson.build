@@ -1,7 +1,7 @@
 project(
   'r2unity',
   'c',
-  version: '0.0.0',
+  version: '1.0.0',
   default_options: [
     'c_std=c99',
     'warning_level=2',
@@ -10,6 +10,10 @@ project(
 )
 
 r_util_dep = dependency('r_util')
+
+conf = configuration_data()
+conf.set_quoted('R2UNITY_VERSION', meson.project_version())
+configure_file(output: 'r2unity_config.h', configuration: conf)
 
 lib_inc = include_directories('src/lib')
 lib_sources = files(
@@ -29,6 +33,7 @@ r2unity = executable(
 )
 
 test('r2unity-help', r2unity, args: ['-h'])
+test('r2unity-version', r2unity, args: ['-v'])
 
 plugins_opt = get_option('plugins')
 r_core_dep = dependency('r_core', required: plugins_opt)
