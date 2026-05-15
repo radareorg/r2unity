@@ -131,6 +131,9 @@ jobs:
         with:
           path: dist/artifacts
 
+      - name: Generate release notes
+        run: ./release.sh notes > release-notes.md
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v3.0.0
         with:
@@ -138,6 +141,6 @@ jobs:
           tag_name: ${{ github.ref_name }}
           draft: false
           prerelease: false
-          generate_release_notes: true
+          body_path: release-notes.md
           files: |
             dist/artifacts/debian-package/*.deb

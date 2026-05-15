@@ -1,6 +1,6 @@
 EXEC = r2unity
 CONFIG_H = r2unity_config.h
-PROJECT_VERSION = $(shell cat meson.build|grep 'version'|cut -d "'" -f2|head -n1)
+PROJECT_VERSION = $(shell ./release.sh version)
 ifeq ($(PROJECT_VERSION),)
 	error
 endif
