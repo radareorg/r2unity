@@ -461,6 +461,20 @@ R_API void r2unity_free_metadata(R2UnityMetadata *meta) {
 	R_FREE (meta);
 }
 
+R_API const char *r2unity_unity_range_from_wire(int wire) {
+	switch (wire) {
+	case 21: return "5.3.0-5.3.5";
+	case 22: return "5.3.6-5.4";
+	case 23: return "5.5";
+	case 24: return "5.6-2020.1";
+	case 27: return "2020.2-2021.3";
+	case 29: return "2022.1-2022.3";
+	case 31: return "2023.x-6000.x";
+	case 39: return "6000.x";
+	default: return "unknown";
+	}
+}
+
 R_API const char *r2unity_metadata_section_name(R2UMetadataSectionId id) {
 	if (id < 0 || id >= R2UNITY_METADATA_SECTION_COUNT) {
 		return NULL;

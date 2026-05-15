@@ -67,19 +67,6 @@ static char *method_attrs_str(unsigned flags) {
 	return r_strbuf_drain (sb);
 }
 
-static const char *unity_range_from_wire(int wire) {
-	switch (wire) {
-	case 21: return "5.3.0-5.3.5";
-	case 22: return "5.3.6-5.4";
-	case 23: return "5.5";
-	case 24: return "5.6-2020.1";
-	case 27: return "2020.2-2021.3";
-	case 29: return "2022.1-2022.3";
-	case 31: return "2023.x-6000.x";
-	default: return "unknown";
-	}
-}
-
 static const char *current_binary_path(RCore *core) {
 	if (core && core->io && core->io->desc && core->io->desc->name) {
 		return core->io->desc->name;
@@ -250,7 +237,7 @@ static int cmd_info(RCore *core, bool as_json) {
 		pj_o (pj);
 		pj_kb (pj, "ok", true);
 		pj_ki (pj, "version", meta->version);
-		pj_ks (pj, "unity_range", unity_range_from_wire (meta->version));
+		pj_ks (pj, "unity_range", r2unity_unity_range_from_wire (meta->version));
 		pj_kn (pj, "types", (ut64)type_count);
 		pj_kn (pj, "methods", (ut64)method_count);
 		pj_kn (pj, "images", (ut64)img_count);
@@ -259,7 +246,7 @@ static int cmd_info(RCore *core, bool as_json) {
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
 	} else {
-		r_cons_printf (core->cons, "wire_version: %d (%s)\n", meta->version, unity_range_from_wire (meta->version));
+		r_cons_printf (core->cons, "wire_version: %d (%s)\n", meta->version, r2unity_unity_range_from_wire (meta->version));
 		r_cons_printf (core->cons, "types:        %zu\n", type_count);
 		r_cons_printf (core->cons, "methods:      %zu\n", method_count);
 		r_cons_printf (core->cons, "images:       %zu\n", img_count);
@@ -713,7 +700,7 @@ static int cmd_sbom(RCore *core) {
 	pj_ko (pj, "component");
 	pj_ks (pj, "type", "application");
 	pj_ks (pj, "name", exe_path? exe_path: "unity-build");
-	pj_ks (pj, "version", unity_range_from_wire (meta->version));
+	pj_ks (pj, "version", r2unity_unity_range_from_wire (meta->version));
 	pj_ka (pj, "properties");
 	pj_o (pj);
 	pj_ks (pj, "name", "unity.metadata.path");

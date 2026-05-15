@@ -24,20 +24,6 @@ typedef struct {
 	ut64 strings_size;
 } R2UnityBinObj;
 
-static const char *unity_range_from_wire(int wire) {
-	switch (wire) {
-	case 21: return "5.3.0-5.3.5";
-	case 22: return "5.3.6-5.4";
-	case 23: return "5.5";
-	case 24: return "5.6-2020.1";
-	case 27: return "2020.2-2021.3";
-	case 29: return "2022.1-2022.3";
-	case 31: return "2023.x-6000.x";
-	case 39: return "6000.x";
-	default: return "unknown";
-	}
-}
-
 static R2UnityBinObj *get_obj(RBinFile *bf) {
 	RBinObject *o = bf? bf->bo: NULL;
 	return o? (R2UnityBinObj *)o->bin_obj: NULL;
@@ -79,7 +65,7 @@ static void fill_sdb(R2UnityBinObj *obj) {
 	Sdb *kv = obj->kv;
 	R2UnityMetadata *meta = obj->meta;
 	sdb_num_set (kv, "version", (ut64)meta->version, 0);
-	sdb_set (kv, "unity_range", unity_range_from_wire (meta->version), 0);
+	sdb_set (kv, "unity_range", r2unity_unity_range_from_wire (meta->version), 0);
 	sdb_num_set (kv, "header.size", r2unity_metadata_header_size (meta), 0);
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
 		Il2CppMetadataSection sec;
@@ -799,7 +785,7 @@ static char *header(RBinFile *bf, int mode) {
 	RStrBuf *sb = r_strbuf_new ("");
 	r_strbuf_appendf (sb, "pf.r2unity_global_metadata_header @ 0x%08"PFMT64x"\n", (ut64)0);
 	r_strbuf_appendf (sb, "0x00000000  Sanity          0x%08x\n", IL2CPP_MAGIC);
-	r_strbuf_appendf (sb, "0x00000004  Version         %d (%s)\n", obj->meta->version, unity_range_from_wire (obj->meta->version));
+	r_strbuf_appendf (sb, "0x00000004  Version         %d (%s)\n", obj->meta->version, r2unity_unity_range_from_wire (obj->meta->version));
 	r_strbuf_appendf (sb, "0x%08"PFMT64x"  HeaderSize      %"PFMT64u"\n", (ut64)0, r2unity_metadata_header_size (obj->meta));
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
 		Il2CppMetadataSection sec;

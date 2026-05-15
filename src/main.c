@@ -93,19 +93,6 @@ static void print_usage(FILE *out, const char *prog_name) {
 		prog_name);
 }
 
-static const char *unity_range_from_wire(int wire) {
-	switch (wire) {
-	case 21: return "5.3.0-5.3.5";
-	case 22: return "5.3.6-5.4";
-	case 23: return "5.5";
-	case 24: return "5.6-2020.1";
-	case 27: return "2020.2-2021.3";
-	case 29: return "2022.1-2022.3";
-	case 31: return "2023.x-6000.x";
-	default: return "unknown";
-	}
-}
-
 static void json_escape(FILE *f, const char *s) {
 	for (; s && *s; s++) {
 		unsigned char c = (unsigned char)*s;
@@ -227,7 +214,7 @@ static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *me
 	fprintf (f, "      \"name\": \"");
 	json_escape (f, exe_path? exe_path: "unity-build");
 	fprintf (f, "\",\n");
-	fprintf (f, "      \"version\": \"%s\",\n", unity_range_from_wire (meta->version));
+	fprintf (f, "      \"version\": \"%s\",\n", r2unity_unity_range_from_wire (meta->version));
 	fprintf (f, "      \"properties\": [\n");
 	fprintf (f, "        { \"name\": \"unity.metadata.path\",         \"value\": \"");
 	json_escape (f, metadata_path);

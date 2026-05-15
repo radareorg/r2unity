@@ -200,6 +200,7 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *
  * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
 R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes(R2UnityMetadata *meta, size_t *count);
 R_API void r2unity_free_interop(R2UnityInterop *items, size_t count);
+R_API const char *r2unity_unity_range_from_wire(int wire);
 R_API const char *r2unity_metadata_section_name(R2UMetadataSectionId id);
 R_API bool r2unity_metadata_section(R2UnityMetadata *meta, R2UMetadataSectionId id, Il2CppMetadataSection *section);
 R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadataSectionId id);
