@@ -83,7 +83,11 @@ mapping.
 
 ## 1. What r2unity's `-S` emits today
 
-The implementation lives in `emit_sbom()` in `src/main.c`.
+The implementation lives in `r2unity_sbom_tostring()` in
+`src/lib/sbom.c`, and is shared by the command-line tool and the r2
+core plugin. The default output is a text summary (`r2unity -S` or
+`r2unity-S`); CycloneDX JSON is available as `r2unity -S -j` and
+`r2unity-Sj`.
 
 ### 1.1 CycloneDX 1.5 top-level
 
@@ -118,18 +122,19 @@ For each `Il2CppAssemblyDefinition` + `Il2CppImageDefinition` pair
 - `purl` — a generic package-URL of the form
 	`pkg:generic/unity/<name>@<version>`.
 - custom `properties`:
-	- `il2cpp:culture` — from `aname.culture_idx`
-	- `il2cpp:publicKeyToken` — 8-byte
-		`aname.public_key_token` in hex
-	- `il2cpp:hashAlgorithm` — `aname.hash_alg` (1 = MD5,
+	- `dotnet.culture` — from `aname.culture_idx`
+	- `dotnet.public_key_token` — 8-byte
+		`aname.public_key_token` in hex, or an empty string for
+		unsigned assemblies
+	- `dotnet.hash_alg` — `aname.hash_alg` (1 = MD5,
 		0x8003/32771 = SHA1, etc.; see
 		`AssemblyHashAlgorithm` enum in the BCL)
-	- `il2cpp:assemblyFlags` — `aname.flags` from ECMA-335
+	- `dotnet.flags` — `aname.flags` from ECMA-335
 		§II.23.1.2
-	- `il2cpp:imageName` — from
+	- `il2cpp.image` — from
 		`Il2CppImageDefinition.nameIndex`
-	- `il2cpp:imageIndex` — the image's row index
-	- `il2cpp:token` — `Il2CppAssemblyDefinition.token`
+	- `il2cpp.image_index` — the image's row index
+	- `il2cpp.token` — `Il2CppAssemblyDefinition.token`
 		(0x20000001 for the module-like row)
 
 ### 1.3 Dependency edges

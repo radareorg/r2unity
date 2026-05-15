@@ -30,6 +30,7 @@ lib_sources = files(
   'src/lib/macho.c',
   'src/lib/paths.c',
   'src/lib/pe.c',
+  'src/lib/sbom.c',
 )
 
 r2unity = executable(

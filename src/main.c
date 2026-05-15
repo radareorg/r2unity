@@ -64,13 +64,13 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"  -D            Detect companion files from the given executable path and exit\n"
 		"  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers\n"
 		"  -h            Show this help and exit\n"
-		"  -j            One-line JSON status, or JSON output with -P\n"
+		"  -j            One-line JSON status, or JSON output with -P/-R/-S\n"
 		"  -l N          Limit emitted entries to N\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
 		"  -q            Quiet mode: omit banner and informational comments\n"
 		"  -r            Emit r2 script commands (flags + comments); pairs with -P\n"
 		"  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)\n"
-		"  -S            Emit a CycloneDX SBOM (JSON) of the managed assemblies\n"
+		"  -S            Emit a text SBOM of the managed assemblies\n"
 		"  -V            Verbose debug tracing on stderr\n"
 		"  -v            Show version and exit\n"
 		"  -z            Enumerate managed string literals (`ldstr`) from metadata\n"
@@ -179,169 +179,6 @@ static int emit_string_literals(R2UnityMetadata *meta, const char *metadata_path
 		R_FREE (bytes);
 	}
 	R_FREE (lits);
-	return 0;
-}
-
-static int emit_sbom(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path) {
-	size_t img_count = 0;
-	Il2CppImageDefinition *imgs = r2unity_get_images (meta, &img_count);
-	size_t asm_count = 0;
-	Il2CppAssemblyDefinition *asms = r2unity_get_assemblies (meta, &asm_count);
-	size_t ref_count = 0;
-	int32_t *refs = r2unity_get_referenced_assemblies (meta, &ref_count);
-	if (!asms || !asm_count) {
-		R_LOG_ERROR ("unable to decode assemblies table for wire version %d",
-			meta->version);
-		R_FREE (imgs);
-		R_FREE (asms);
-		R_FREE (refs);
-		return 1;
-	}
-
-	FILE *f = stdout;
-	fprintf (f, "{\n");
-	fprintf (f, "  \"bomFormat\": \"CycloneDX\",\n");
-	fprintf (f, "  \"specVersion\": \"1.5\",\n");
-	fprintf (f, "  \"version\": 1,\n");
-	fprintf (f, "  \"metadata\": {\n");
-	fprintf (f, "    \"tools\": {\n");
-	fprintf (f, "      \"components\": [\n");
-	fprintf (f, "        { \"type\": \"application\", \"name\": \"r2unity\" }\n");
-	fprintf (f, "      ]\n");
-	fprintf (f, "    },\n");
-	fprintf (f, "    \"component\": {\n");
-	fprintf (f, "      \"type\": \"application\",\n");
-	fprintf (f, "      \"name\": \"");
-	json_escape (f, exe_path? exe_path: "unity-build");
-	fprintf (f, "\",\n");
-	fprintf (f, "      \"version\": \"%s\",\n", r2unity_unity_range_from_wire (meta->version));
-	fprintf (f, "      \"properties\": [\n");
-	fprintf (f, "        { \"name\": \"unity.metadata.path\",         \"value\": \"");
-	json_escape (f, metadata_path);
-	fprintf (f, "\" },\n");
-	fprintf (f, "        { \"name\": \"unity.metadata.wire_version\", \"value\": \"%d\" },\n", meta->version);
-	fprintf (f, "        { \"name\": \"unity.metadata.confidence\",   \"value\": \"range\" }\n");
-	fprintf (f, "      ]\n");
-	fprintf (f, "    }\n");
-	fprintf (f, "  },\n");
-
-	/* managed components */
-	fprintf (f, "  \"components\": [\n");
-	for (size_t i = 0; i < asm_count; i++) {
-		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = r2unity_get_string (meta, a->aname.culture_idx);
-		const char *nm = name? name: "";
-		const char *cl = (culture && *culture)? culture: "neutral";
-
-		/* image (DLL filename) via a->image_index */
-		const char *img = "";
-		char *img_name_owned = NULL;
-		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
-			img_name_owned = r2unity_get_string (meta, imgs[a->image_index].nameIndex);
-			if (img_name_owned) {
-				img = img_name_owned;
-			}
-		}
-
-		char pkt_hex[17];
-		int empty = 1;
-		for (int k = 0; k < 8; k++) {
-			if (a->aname.public_key_token[k]) {
-				empty = 0;
-				break;
-			}
-		}
-		if (empty) {
-			strcpy (pkt_hex, "null");
-		} else {
-			snprintf (pkt_hex, sizeof (pkt_hex), "%02x%02x%02x%02x%02x%02x%02x%02x", a->aname.public_key_token[0], a->aname.public_key_token[1], a->aname.public_key_token[2], a->aname.public_key_token[3], a->aname.public_key_token[4], a->aname.public_key_token[5], a->aname.public_key_token[6], a->aname.public_key_token[7]);
-		}
-
-		fprintf (f, "    {\n");
-		fprintf (f, "      \"bom-ref\": \"asm:");
-		json_escape (f, nm);
-		fprintf (f, ":%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		fprintf (f, "      \"type\": \"library\",\n");
-		fprintf (f, "      \"name\": \"");
-		json_escape (f, nm);
-		fprintf (f, "\",\n");
-		fprintf (f, "      \"version\": \"%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		fprintf (f, "      \"purl\": \"pkg:generic/unity/");
-		json_escape (f, nm);
-		fprintf (f, "@%d.%d.%d.%d\",\n", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		fprintf (f, "      \"properties\": [\n");
-		fprintf (f, "        { \"name\": \"dotnet.culture\",          \"value\": \"");
-		json_escape (f, cl);
-		fprintf (f, "\" },\n");
-		fprintf (f, "        { \"name\": \"dotnet.public_key_token\", \"value\": ");
-		if (empty) {
-			fprintf (f, "null");
-		} else {
-			fprintf (f, "\"%s\"", pkt_hex);
-		}
-		fprintf (f, " },\n");
-		fprintf (f, "        { \"name\": \"dotnet.hash_alg\",         \"value\": \"0x%08x\" },\n", a->aname.hash_alg);
-		fprintf (f, "        { \"name\": \"dotnet.flags\",            \"value\": \"0x%08x\" },\n", a->aname.flags);
-		fprintf (f, "        { \"name\": \"il2cpp.image\",            \"value\": \"");
-		json_escape (f, img);
-		fprintf (f, "\" },\n");
-		fprintf (f, "        { \"name\": \"il2cpp.image_index\",      \"value\": \"%d\" },\n", a->image_index);
-		fprintf (f, "        { \"name\": \"il2cpp.token\",            \"value\": \"0x%08x\" }\n", a->token);
-		fprintf (f, "      ]\n");
-		fprintf (f, "    }%s\n", (i + 1 < asm_count)? ",": "");
-
-		free (name);
-		free (culture);
-		free (img_name_owned);
-	}
-	fprintf (f, "  ],\n");
-
-	/* dependency edges from referencedAssemblies */
-	fprintf (f, "  \"dependencies\": [\n");
-	bool first_dep = true;
-	for (size_t i = 0; i < asm_count; i++) {
-		Il2CppAssemblyDefinition *a = &asms[i];
-		if (a->referenced_count <= 0 || a->referenced_start < 0) {
-			continue;
-		}
-		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
-			continue;
-		}
-		char *name = r2unity_get_string (meta, a->aname.name_idx);
-		const char *nm = name? name: "";
-		if (!first_dep) {
-			fprintf (f, ",\n");
-		}
-		first_dep = false;
-		fprintf (f, "    {\n      \"ref\": \"asm:");
-		json_escape (f, nm);
-		fprintf (f, ":%d.%d.%d.%d\",\n      \"dependsOn\": [", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		bool first_ref = true;
-		for (int k = 0; k < a->referenced_count; k++) {
-			int32_t ridx = refs[a->referenced_start + k];
-			if (ridx < 0 || (size_t)ridx >= asm_count) {
-				continue;
-			}
-			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = r2unity_get_string (meta, r->aname.name_idx);
-			if (!first_ref) {
-				fprintf (f, ",");
-			}
-			first_ref = false;
-			fprintf (f, "\n        \"asm:");
-			json_escape (f, rname? rname: "");
-			fprintf (f, ":%d.%d.%d.%d\"", r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
-			free (rname);
-		}
-		fprintf (f, "\n      ]\n    }");
-		free (name);
-	}
-	fprintf (f, "\n  ]\n}\n");
-
-	R_FREE (imgs);
-	R_FREE (asms);
-	R_FREE (refs);
 	return 0;
 }
 
@@ -742,7 +579,14 @@ int main(int argc, char *argv[]) {
 	}
 
 	if (sbom) {
-		int rc = emit_sbom (meta, exe_path, metadata_path);
+		char *out = r2unity_sbom_tostring (meta, exe_path, metadata_path, json_one_line? R2U_SBOM_JSON: R2U_SBOM_TEXT);
+		int rc = out? 0: 1;
+		if (out) {
+			fputs (out, stdout);
+			free (out);
+		} else {
+			R_LOG_ERROR ("unable to decode assemblies table for wire version %d", meta->version);
+		}
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		return rc;

@@ -71,7 +71,8 @@ The normal inputs are the native IL2CPP binary and the matching
 ./r2unity -z /path/to/global-metadata.dat
 ./r2unity -P -j /path/to/GameAssembly.dll /path/to/global-metadata.dat
 ./r2unity -R -j /path/to/GameAssembly.dll /path/to/global-metadata.dat
-./r2unity -S /path/to/GameAssembly.dll /path/to/global-metadata.dat > sbom.json
+./r2unity -S /path/to/GameAssembly.dll /path/to/global-metadata.dat > sbom.txt
+./r2unity -S -j /path/to/GameAssembly.dll /path/to/global-metadata.dat > sbom.json
 ```
 
 ## radare2
@@ -87,7 +88,8 @@ r2unity-s*     print the r2 commands instead of applying them
 r2unity-z[j]   list managed string literals
 r2unity-P[*j]  list P/Invoke entries
 r2unity-R[*j]  list reverse-P/Invoke entries
-r2unity-S      emit managed-assembly CycloneDX JSON
+r2unity-S      emit managed-assembly SBOM text summary
+r2unity-Sj     emit managed-assembly CycloneDX JSON
 ```
 
 Set `r2unity.metadata` and `r2unity.library` manually when auto-detection is not

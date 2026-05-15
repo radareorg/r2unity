@@ -188,6 +188,11 @@ typedef enum {
 	R2U_NAME_FALLBACK_TYPE = 2
 } R2UnityNameFlags;
 
+typedef enum {
+	R2U_SBOM_TEXT,
+	R2U_SBOM_JSON
+} R2UnitySbomFormat;
+
 R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf);
 R_API void r2unity_free_metadata(R2UnityMetadata *meta);
 /* Caller owns the returned string and must free() it. NULL on missing/empty. */
@@ -209,6 +214,7 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *
  * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
 R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes(R2UnityMetadata *meta, size_t *count);
 R_API void r2unity_free_interop(R2UnityInterop *items, size_t count);
+R_API char *r2unity_sbom_tostring(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path, R2UnitySbomFormat format);
 R_API const char *r2unity_unity_range_from_wire(int wire);
 R_API const char *r2unity_metadata_section_name(R2UMetadataSectionId id);
 R_API bool r2unity_metadata_section(R2UnityMetadata *meta, R2UMetadataSectionId id, Il2CppMetadataSection *section);

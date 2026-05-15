@@ -17,7 +17,7 @@ static const char *g_help_msg[] = {
 	"r2unity-z", "[j]", "list managed string literals",
 	"r2unity-P", "[*j]", "list P/Invoke (managed -> native)",
 	"r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)",
-	"r2unity-S", "", "emit CycloneDX SBOM (JSON)", "Variables:", "", "",
+	"r2unity-S", "[j]", "emit managed-assembly SBOM (text or JSON)", "Variables:", "", "",
 	"r2unity.metadata", "", "path to global-metadata.dat",
 	"r2unity.library", "", "path to IL2CPP native library",
 	NULL
@@ -620,8 +620,8 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 	return 0;
 }
 
-/* ---------- r2unity-S (SBOM JSON) ---------- */
-static int cmd_sbom(RCore *core) {
+/* ---------- r2unity-S (SBOM) ---------- */
+static int cmd_sbom(RCore *core, char mode) {
 	const char *metadata_path = resolve_metadata_path (core);
 	const char *exe_path = current_binary_path (core);
 	RBuffer *buf = NULL;
@@ -629,145 +629,14 @@ static int cmd_sbom(RCore *core) {
 	if (!meta) {
 		return 1;
 	}
-	size_t img_count = 0;
-	Il2CppImageDefinition *imgs = r2unity_get_images (meta, &img_count);
-	size_t asm_count = 0;
-	Il2CppAssemblyDefinition *asms = r2unity_get_assemblies (meta, &asm_count);
-	size_t ref_count = 0;
-	int32_t *refs = r2unity_get_referenced_assemblies (meta, &ref_count);
-	if (!asms || !asm_count) {
-		R_LOG_ERROR ("unable to decode assemblies table for wire version %d",
-			meta->version);
-		R_FREE (imgs);
-		R_FREE (asms);
-		R_FREE (refs);
+	char *out = r2unity_sbom_tostring (meta, exe_path, metadata_path, mode == 'j'? R2U_SBOM_JSON: R2U_SBOM_TEXT);
+	if (!out) {
+		R_LOG_ERROR ("unable to decode assemblies table for wire version %d", meta->version);
 		close_metadata (meta, buf);
 		return 1;
 	}
-
-	PJ *pj = pj_new ();
-	pj_o (pj);
-	pj_ks (pj, "bomFormat", "CycloneDX");
-	pj_ks (pj, "specVersion", "1.5");
-	pj_ki (pj, "version", 1);
-	pj_ko (pj, "metadata");
-	pj_ko (pj, "tools");
-	pj_ka (pj, "components");
-	pj_o (pj);
-	pj_ks (pj, "type", "application");
-	pj_ks (pj, "name", "r2unity");
-	pj_end (pj);
-	pj_end (pj);
-	pj_end (pj);
-	pj_ko (pj, "component");
-	pj_ks (pj, "type", "application");
-	pj_ks (pj, "name", exe_path? exe_path: "unity-build");
-	pj_ks (pj, "version", r2unity_unity_range_from_wire (meta->version));
-	pj_ka (pj, "properties");
-	pj_o (pj);
-	pj_ks (pj, "name", "unity.metadata.path");
-	pj_ks (pj, "value", metadata_path? metadata_path: "");
-	pj_end (pj);
-	pj_o (pj);
-	pj_ks (pj, "name", "unity.metadata.wire_version");
-	char wv[16];
-	snprintf (wv, sizeof (wv), "%d", meta->version);
-	pj_ks (pj, "value", wv);
-	pj_end (pj);
-	pj_end (pj);
-	pj_end (pj);
-	pj_end (pj);
-
-	pj_ka (pj, "components");
-	for (size_t i = 0; i < asm_count; i++) {
-		Il2CppAssemblyDefinition *a = &asms[i];
-		char *name = r2unity_get_string (meta, a->aname.name_idx);
-		char *culture = r2unity_get_string (meta, a->aname.culture_idx);
-		const char *nm = name? name: "";
-		const char *cl = (culture && *culture)? culture: "neutral";
-		char *img_name_owned = NULL;
-		const char *img = "";
-		if (imgs && a->image_index >= 0 && (size_t)a->image_index < img_count) {
-			img_name_owned = r2unity_get_string (meta, imgs[a->image_index].nameIndex);
-			if (img_name_owned) {
-				img = img_name_owned;
-			}
-		}
-		char ver[64];
-		snprintf (ver, sizeof (ver), "%d.%d.%d.%d", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		char bomref[512];
-		snprintf (bomref, sizeof (bomref), "asm:%s:%s", nm, ver);
-		char purl[512];
-		snprintf (purl, sizeof (purl), "pkg:generic/unity/%s@%s", nm, ver);
-
-		pj_o (pj);
-		pj_ks (pj, "bom-ref", bomref);
-		pj_ks (pj, "type", "library");
-		pj_ks (pj, "name", nm);
-		pj_ks (pj, "version", ver);
-		pj_ks (pj, "purl", purl);
-		pj_ka (pj, "properties");
-		pj_o (pj);
-		pj_ks (pj, "name", "dotnet.culture");
-		pj_ks (pj, "value", cl);
-		pj_end (pj);
-		pj_o (pj);
-		pj_ks (pj, "name", "il2cpp.image");
-		pj_ks (pj, "value", img);
-		pj_end (pj);
-		pj_end (pj);
-		pj_end (pj);
-		free (name);
-		free (culture);
-		free (img_name_owned);
-	}
-	pj_end (pj);
-
-	pj_ka (pj, "dependencies");
-	for (size_t i = 0; i < asm_count; i++) {
-		Il2CppAssemblyDefinition *a = &asms[i];
-		if (a->referenced_count <= 0 || a->referenced_start < 0) {
-			continue;
-		}
-		if ((size_t) (a->referenced_start + a->referenced_count) > ref_count) {
-			continue;
-		}
-		char *name = r2unity_get_string (meta, a->aname.name_idx);
-		const char *nm = name? name: "";
-		char ver[64];
-		snprintf (ver, sizeof (ver), "%d.%d.%d.%d", a->aname.major, a->aname.minor, a->aname.build, a->aname.revision);
-		char bomref[512];
-		snprintf (bomref, sizeof (bomref), "asm:%s:%s", nm, ver);
-		pj_o (pj);
-		pj_ks (pj, "ref", bomref);
-		pj_ka (pj, "dependsOn");
-		for (int k = 0; k < a->referenced_count; k++) {
-			int32_t ridx = refs[a->referenced_start + k];
-			if (ridx < 0 || (size_t)ridx >= asm_count) {
-				continue;
-			}
-			Il2CppAssemblyDefinition *r = &asms[ridx];
-			char *rname = r2unity_get_string (meta, r->aname.name_idx);
-			char rver[64];
-			snprintf (rver, sizeof (rver), "%d.%d.%d.%d", r->aname.major, r->aname.minor, r->aname.build, r->aname.revision);
-			char rref[512];
-			snprintf (rref, sizeof (rref), "asm:%s:%s", rname? rname: "", rver);
-			pj_s (pj, rref);
-			free (rname);
-		}
-		pj_end (pj);
-		pj_end (pj);
-		free (name);
-	}
-	pj_end (pj);
-
-	pj_end (pj);
-	r_cons_println (core->cons, pj_string (pj));
-	pj_free (pj);
-
-	R_FREE (imgs);
-	R_FREE (asms);
-	R_FREE (refs);
+	r_cons_printf (core->cons, "%s", out);
+	free (out);
 	close_metadata (meta, buf);
 	return 0;
 }
@@ -799,6 +668,10 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 			mode = *rest;
 			rest++;
 		}
+		if (*rest && *rest != ' ' && *rest != '\t') {
+			r_core_cmd_help (core, g_help_msg);
+			return true;
+		}
 	}
 	while (*rest == ' ' || *rest == '\t') {
 		rest++;
@@ -818,7 +691,7 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 	case 'R':
 		return cmd_interop (core, true, mode) == 0;
 	case 'S':
-		return cmd_sbom (core) == 0;
+		return cmd_sbom (core, mode) == 0;
 	case '?':
 	case 'h':
 		r_core_cmd_help (core, g_help_msg);
