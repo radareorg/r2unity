@@ -5,6 +5,14 @@
 #   $ sys/release-notes.sh 4.5.0 4.5.1   # from 4.5.0 to 4.5.1
 #
 
+release_log() {
+	if [ -n "$PREV" ]; then
+		git log ${PREV}..${VERS} > .l
+	else
+		git log ${VERS} > .l
+	fi
+}
+
 release_notes() {
 if [ -n "`git log -n 1 | grep Release`" ]; then
 	VERS=`git tag --sort=committerdate | grep -v conti | tail -n 1`
@@ -16,15 +24,24 @@ fi
 
 [ -n "$1" ] && PREV="$1"
 [ -n "$2" ] && VERS="$2"
-[ -z "$PREV" ] && PREV="$(git rev-list --max-parents=0 HEAD)"
+FIRST_RELEASE=0
+if [ "$PREV" = "$VERS" ]; then
+	if [ "`git tag | wc -l | awk '{print $1}'`" = 1 ]; then
+		PREV=
+		FIRST_RELEASE=1
+	else
+		PREV=`git tag --sort=committerdate | grep -v conti | tail -n 2 | head -n1`
+	fi
+fi
+[ -z "$PREV" ] && [ "$FIRST_RELEASE" = 0 ] && PREV="$(git rev-list --max-parents=0 HEAD)"
 
 
-git log ${PREV}..${VERS} > .l
+release_log
 # When HEAD contains a tag do this magic
 if [ ! -s .l ]; then
   VERS=$PREV
   PREV=`git tag --sort=committerdate | grep -v conti | tail -n 2 | head -n1`
-  git log ${PREV}..${VERS} > .l
+  release_log
 fi
 grep ^Author .l | cut -d : -f 2- | sed -e 's,radare,pancake,' | sort -u > .A
 CODENAME="`git log | grep -i 'Release' | head -n 1 | cut -d - -f 2- | cut -d ' ' -f 3-`"
