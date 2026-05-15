@@ -106,9 +106,9 @@ jobs:
       - name: Upload Debian package artifact
         uses: actions/upload-artifact@v7
         with:
-          name: debian-package
           path: dist/debian/*.deb
           if-no-files-found: error
+          archive: false
 
   release:
     name: Publish release
@@ -129,7 +129,9 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: '*.deb'
           path: dist/artifacts
+          merge-multiple: true
 
       - name: Generate release notes
         run: ./release.sh notes > release-notes.md
@@ -142,5 +144,6 @@ jobs:
           draft: false
           prerelease: false
           body_path: release-notes.md
+          fail_on_unmatched_files: true
           files: |
-            dist/artifacts/debian-package/*.deb
+            dist/artifacts/*.deb
