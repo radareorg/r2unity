@@ -6,6 +6,16 @@
 #include <r_lib.h>
 #include "../lib/lib.h"
 
+#if defined(R_LIB_ABIVERSION) && !defined(R2_ABIVERSION)
+#define R2_ABIVERSION R_LIB_ABIVERSION
+#endif
+
+#if R2_ABIVERSION >= 100
+#define R2UNITY_BIN_VEC_ABI 1
+#else
+#define R2UNITY_BIN_VEC_ABI 0
+#endif
+
 typedef struct {
 	R2UnityMetadata *meta;
 	RBuffer *buf;
@@ -169,17 +179,7 @@ static RBinInfo *info(RBinFile *bf) {
 	return ret;
 }
 
-static void section_free(void *p) {
-	RBinSection *sec = (RBinSection *)p;
-	if (sec) {
-		free (sec->name);
-		free (sec->format);
-		free (sec);
-	}
-}
-
-static RBinSection *new_section(const char *name, ut64 off, ut64 size, bool has_strings) {
-	RBinSection *sec = R_NEW0 (RBinSection);
+static void init_section(RBinSection *sec, const char *name, ut64 off, ut64 size, bool has_strings) {
 	sec->name = strdup (name);
 	sec->paddr = off;
 	sec->vaddr = off;
@@ -191,6 +191,58 @@ static RBinSection *new_section(const char *name, ut64 off, ut64 size, bool has_
 	sec->has_strings = has_strings;
 	sec->is_data = true;
 	sec->add = true;
+}
+
+#if R2UNITY_BIN_VEC_ABI
+static void append_section(RVecRBinSection *ret, const char *name, ut64 off, ut64 size, bool has_strings) {
+	RBinSection *sec = RVecRBinSection_emplace_back (ret);
+	if (sec) {
+		init_section (sec, name, off, size, has_strings);
+	}
+}
+
+static bool sections_vec(RBinFile *bf) {
+	R2UnityBinObj *obj = get_obj (bf);
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
+	RVecRBinSection *ret = &bf->bo->sections_vec;
+	RVecRBinSection_clear (ret);
+	ut64 header_size = r2unity_metadata_header_size (obj->meta);
+	if (header_size) {
+		append_section (ret, "il2cpp.header", 0, header_size, false);
+	}
+	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
+		Il2CppMetadataSection sec;
+		r2unity_metadata_section (obj->meta, (R2UMetadataSectionId)i, &sec);
+		if (!sec.size) {
+			continue;
+		}
+		const char *name = r2unity_metadata_section_name ((R2UMetadataSectionId)i);
+		if (!name) {
+			continue;
+		}
+		bool has_strings = i == R2U_SEC_STRINGS || i == R2U_SEC_STRING_LITERAL_DATA || i == R2U_SEC_WINDOWS_RUNTIME_STRINGS;
+		char *sname = r_str_newf ("il2cpp.%s", name);
+		append_section (ret, sname, sec.offset, sec.size, has_strings);
+		free (sname);
+	}
+	return true;
+}
+#else
+static void section_free(void *p) {
+	RBinSection *sec = (RBinSection *)p;
+	if (sec) {
+		free (sec->name);
+		free (sec->format);
+		free (sec);
+	}
+}
+
+static RBinSection *new_section(const char *name, ut64 off, ut64 size, bool has_strings) {
+	RBinSection *sec = R_NEW0 (RBinSection);
+	if (!sec) {
+		return NULL;
+	}
+	init_section (sec, name, off, size, has_strings);
 	return sec;
 }
 
@@ -219,6 +271,7 @@ static RList *sections(RBinFile *bf) {
 	}
 	return ret;
 }
+#endif
 
 static RBinAttribute method_attr(uint16_t flags, const char *name) {
 	enum {
@@ -356,11 +409,46 @@ static RBinSymbol *new_symbol(const char *name, ut64 paddr, ut64 size, const cha
 	return sym;
 }
 
-static RList *symbols(RBinFile *bf) {
+#if R2UNITY_BIN_VEC_ABI
+typedef RVecRBinSymbol R2UnitySymbolSink;
+
+static void append_symbol(R2UnitySymbolSink *ret, RBinSymbol *sym) {
+	if (!sym) {
+		return;
+	}
+	RBinSymbol *dst = RVecRBinSymbol_emplace_back (ret);
+	if (!dst) {
+		r_bin_symbol_free (sym);
+		return;
+	}
+	*dst = *sym;
+	free (sym);
+}
+#else
+typedef RList R2UnitySymbolSink;
+
+static void append_symbol(R2UnitySymbolSink *ret, RBinSymbol *sym) {
+	if (sym) {
+		r_list_append (ret, sym);
+	}
+}
+#endif
+
+static void append_class_method(RBinClass *klass, RBinSymbol *sym) {
+	if (!sym) {
+		return;
+	}
+#if R2UNITY_BIN_VEC_ABI
+	append_symbol (&klass->methods, sym);
+#else
+	r_list_append (klass->methods, sym);
+#endif
+}
+
+static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 	R2UnityBinObj *obj = get_obj (bf);
-	R_RETURN_VAL_IF_FAIL (obj, NULL);
+	R_RETURN_VAL_IF_FAIL (obj, false);
 	R2UnityMetadata *meta = obj->meta;
-	RList *ret = r_list_newf ((RListFree)r_bin_symbol_free);
 	int ordinal = 0;
 
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
@@ -375,9 +463,7 @@ static RList *symbols(RBinFile *bf) {
 		}
 		char *sname = r_str_newf ("section.il2cpp.%s", name);
 		RBinSymbol *sym = new_symbol (sname, sec.offset, sec.size, R_BIN_TYPE_SECTION_STR, R_BIN_ATTR_READONLY, NULL, ordinal++);
-		if (sym) {
-			r_list_append (ret, sym);
-		}
+		append_symbol (ret, sym);
 		free (sname);
 	}
 
@@ -391,9 +477,7 @@ static RList *symbols(RBinFile *bf) {
 		if (name) {
 			char *sname = r_str_newf ("image.%s", name);
 			RBinSymbol *sym = new_symbol (sname, image_sec.offset + i * image_entry, image_entry, R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY, NULL, ordinal++);
-			if (sym) {
-				r_list_append (ret, sym);
-			}
+			append_symbol (ret, sym);
 			free (sname);
 			free (name);
 		}
@@ -409,9 +493,7 @@ static RList *symbols(RBinFile *bf) {
 		if (name) {
 			char *sname = r_str_newf ("assembly.%s", name);
 			RBinSymbol *sym = new_symbol (sname, asm_sec.offset + i * asm_entry, asm_entry, R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY, NULL, ordinal++);
-			if (sym) {
-				r_list_append (ret, sym);
-			}
+			append_symbol (ret, sym);
 			free (sname);
 			free (name);
 		}
@@ -425,9 +507,7 @@ static RList *symbols(RBinFile *bf) {
 	for (size_t i = 0; types && i < type_count; i++) {
 		char *name = type_fullname (obj, &types[i], i);
 		RBinSymbol *sym = new_symbol (name, type_sec.offset + i * type_entry, type_entry, R_BIN_TYPE_OBJECT_STR, type_attr (types[i].flags), NULL, ordinal++);
-		if (sym) {
-			r_list_append (ret, sym);
-		}
+		append_symbol (ret, sym);
 		free (name);
 	}
 
@@ -447,9 +527,7 @@ static RList *symbols(RBinFile *bf) {
 			classname = type_fullname (obj, &types[methods[i].declaringType], (size_t)methods[i].declaringType);
 		}
 		RBinSymbol *sym = new_symbol (name, method_sec.offset + i * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[i].flags, mn), classname, ordinal++);
-		if (sym) {
-			r_list_append (ret, sym);
-		}
+		append_symbol (ret, sym);
 		free (classname);
 		free (mn);
 		free (name);
@@ -459,8 +537,25 @@ static RList *symbols(RBinFile *bf) {
 	R_FREE (types);
 	R_FREE (asms);
 	R_FREE (images);
+	return true;
+}
+
+#if R2UNITY_BIN_VEC_ABI
+static bool symbols_vec(RBinFile *bf) {
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo, false);
+	RVecRBinSymbol_clear (&bf->bo->symbols_vec);
+	return symbols_fill (bf, &bf->bo->symbols_vec);
+}
+#else
+static RList *symbols(RBinFile *bf) {
+	RList *ret = r_list_newf ((RListFree)r_bin_symbol_free);
+	if (!ret || !symbols_fill (bf, ret)) {
+		r_list_free (ret);
+		return NULL;
+	}
 	return ret;
 }
+#endif
 
 static RList *classes(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
@@ -500,9 +595,7 @@ static RList *classes(RBinFile *bf) {
 			char *mname = method_fullname (obj, &methods[mi], types, type_count);
 			char *raw = get_string (obj, methods[mi].nameIndex);
 			RBinSymbol *sym = new_symbol (mname? mname: raw, method_sec.offset + mi * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[mi].flags, raw), NULL, (int)mi);
-			if (sym) {
-				r_list_append (klass->methods, sym);
-			}
+			append_class_method (klass, sym);
 			free (raw);
 			free (mname);
 		}
@@ -581,10 +674,34 @@ static RList *strings(RBinFile *bf) {
 	return ret;
 }
 
-static RList *imports(RBinFile *bf) {
+#if R2UNITY_BIN_VEC_ABI
+typedef RVecRBinImport R2UnityImportSink;
+
+static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
+	if (!imp) {
+		return;
+	}
+	RBinImport *dst = RVecRBinImport_emplace_back (ret);
+	if (!dst) {
+		r_bin_import_free (imp);
+		return;
+	}
+	*dst = *imp;
+	free (imp);
+}
+#else
+typedef RList R2UnityImportSink;
+
+static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
+	if (imp) {
+		r_list_append (ret, imp);
+	}
+}
+#endif
+
+static bool imports_fill(RBinFile *bf, R2UnityImportSink *ret) {
 	R2UnityBinObj *obj = get_obj (bf);
-	R_RETURN_VAL_IF_FAIL (obj, NULL);
-	RList *ret = r_list_newf ((RListFree)r_bin_import_free);
+	R_RETURN_VAL_IF_FAIL (obj, false);
 	size_t count = 0;
 	R2UnityInterop *items = r2unity_enumerate_pinvokes (obj->meta, &count);
 	for (size_t i = 0; items && i < count; i++) {
@@ -596,11 +713,28 @@ static RList *imports(RBinFile *bf) {
 		imp->type = R_BIN_TYPE_FUNC_STR;
 		imp->bind = R_BIN_BIND_GLOBAL_STR;
 		imp->ordinal = (ut32)i;
-		r_list_append (ret, imp);
+		append_import (ret, imp);
 	}
 	r2unity_free_interop (items, count);
+	return true;
+}
+
+#if R2UNITY_BIN_VEC_ABI
+static bool imports_vec(RBinFile *bf) {
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo, false);
+	RVecRBinImport_clear (&bf->bo->imports_vec);
+	return imports_fill (bf, &bf->bo->imports_vec);
+}
+#else
+static RList *imports(RBinFile *bf) {
+	RList *ret = r_list_newf ((RListFree)r_bin_import_free);
+	if (!ret || !imports_fill (bf, ret)) {
+		r_list_free (ret);
+		return NULL;
+	}
 	return ret;
 }
+#endif
 
 static RList *libs(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
@@ -698,10 +832,16 @@ RBinPlugin r_bin_plugin_r2unity = {
 	.baddr = &baddr,
 	.size = &size,
 	.info = &info,
+#if R2UNITY_BIN_VEC_ABI
+	.sections_vec = &sections_vec,
+	.symbols_vec = &symbols_vec,
+	.imports_vec = &imports_vec,
+#else
 	.sections = &sections,
 	.symbols = &symbols,
-	.strings = &strings,
 	.imports = &imports,
+#endif
+	.strings = &strings,
 	.libs = &libs,
 	.classes = &classes,
 	.fields = &fields,
