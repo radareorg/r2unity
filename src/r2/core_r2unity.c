@@ -284,31 +284,6 @@ static bool find_method_pointers(R2UnityMetadata *meta, const char *path, ut64 *
 	return false;
 }
 
-/* Build the fully-qualified method name "Ns.Class.Method(argc)". Caller owns. */
-static char *build_method_fullname(R2UnityMetadata *meta,
-	const Il2CppMethodDefinition *m,
-	const Il2CppTypeDefinition *td) {
-	char *mn = r2unity_get_string (meta, m->nameIndex);
-	if (!mn) {
-		return NULL;
-	}
-	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
-	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
-	unsigned pc = (unsigned)m->parameterCount;
-	char *out = NULL;
-	if (ns && *ns) {
-		out = r_str_newf ("%s.%s.%s(%u)", ns, tn? tn: "", mn, pc);
-	} else if (tn && *tn) {
-		out = r_str_newf ("%s.%s(%u)", tn, mn, pc);
-	} else {
-		out = r_str_newf ("%s(%u)", mn, pc);
-	}
-	free (ns);
-	free (tn);
-	free (mn);
-	return out;
-}
-
 /* ---------- r2unity-s (methods) ---------- */
 static int cmd_symbols(RCore *core, char mode) {
 	/* mode: 0 = apply to r2 session, '*' = print r2 commands, 'j' = JSON */
@@ -340,20 +315,7 @@ static int cmd_symbols(RCore *core, char mode) {
 		}
 	}
 
-	int *type2img = NULL;
-	if (images && type_count > 0) {
-		type2img = R_NEWS (int, type_count);
-		for (size_t ti = 0; ti < type_count; ti++) {
-			type2img[ti] = -1;
-		}
-		for (size_t ii = 0; ii < img_count; ii++) {
-			int start = images[ii].typeStart;
-			int count = (int)images[ii].typeCount;
-			for (int k = 0; k < count && start >= 0 && (size_t) (start + k) < type_count; k++) {
-				type2img[start + k] = (int)ii;
-			}
-		}
-	}
+	int *type2img = r2unity_build_type_image_map (images, img_count, type_count);
 
 	PJ *pj = NULL;
 	if (mode == 'j') {
@@ -369,18 +331,18 @@ static int cmd_symbols(RCore *core, char mode) {
 	for (size_t j = 0; j < method_count; j++) {
 		Il2CppMethodDefinition *m = &methods[j];
 		const Il2CppTypeDefinition *td = NULL;
+		size_t type_idx = 0;
 		if (m->declaringType >= 0 && (size_t)m->declaringType < type_count) {
+			type_idx = (size_t)m->declaringType;
 			td = &types[m->declaringType];
 		}
 		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[j]: 0;
 		const Il2CppImageDefinition *img = NULL;
-		if (type2img && td) {
-			int ii = type2img[m->declaringType];
-			if (ii >= 0 && (size_t)ii < img_count) {
-				img = &images[ii];
-			}
+		int ii = r2unity_image_index_for_method (type2img, type_count, m);
+		if (ii >= 0 && (size_t)ii < img_count) {
+			img = &images[ii];
 		}
-		char *fullname = build_method_fullname (meta, m, td);
+		char *fullname = r2unity_method_fullname (meta, m, td, type_idx, R2U_NAME_WITH_PARAMS);
 		if (!fullname) {
 			continue;
 		}

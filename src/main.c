@@ -602,33 +602,21 @@ static bool find_method_pointers_fast(R2UnityMetadata *meta, const char *path, u
 static bool emit_r2_method(R2UnityMetadata *meta,
 	const Il2CppMethodDefinition *m,
 	const Il2CppTypeDefinition *td,
+	size_t type_idx,
 	const Il2CppImageDefinition *img,
 	bool have_img_map,
 	ut64 addr) {
 	if (addr <= 0x1000) {
 		return false;
 	}
-	char *mn = r2unity_get_string (meta, m->nameIndex);
-	if (!mn) {
+	char *fullname = r2unity_method_fullname (meta, m, td, type_idx, R2U_NAME_WITH_PARAMS);
+	if (!fullname) {
 		return false;
 	}
-	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
-	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
-	char fullname[1024];
-	unsigned pc = (unsigned)m->parameterCount;
-	if (ns && *ns) {
-		snprintf (fullname, sizeof (fullname), "%s.%s.%s(%u)", ns, tn? tn: "", mn, pc);
-	} else if (tn && *tn) {
-		snprintf (fullname, sizeof (fullname), "%s.%s(%u)", tn, mn, pc);
-	} else {
-		snprintf (fullname, sizeof (fullname), "%s(%u)", mn, pc);
-	}
-	free (ns);
-	free (tn);
-	free (mn);
 	/* No image map context: fall back to a plain comment. */
 	if (!have_img_map || !td) {
 		printf ("# %s\n", fullname);
+		free (fullname);
 		return true;
 	}
 	r_name_filter (fullname, -1);
@@ -657,6 +645,7 @@ static bool emit_r2_method(R2UnityMetadata *meta,
 	}
 	free (im);
 	free (attrs);
+	free (fullname);
 	return true;
 }
 
@@ -826,25 +815,9 @@ int main(int argc, char *argv[]) {
 		printf ("# Input file: %s\n\n", metadata_path);
 	}
 
-	/* Build a typeIndex -> imageIndex map so method output can be prefixed with
-	 * the owning DLL name. Keep method_ptrs 1:1 with method_definitions — gaps
-	 *(zeros) are expected for abstract/generic/external methods. */
 	size_t img_count = 0;
 	Il2CppImageDefinition *images = r2unity_get_images (meta, &img_count);
-	int *type2img = NULL;
-	if (images && type_count > 0) {
-		type2img = R_NEWS (int, type_count);
-		for (size_t ti = 0; ti < type_count; ti++) {
-			type2img[ti] = -1;
-		}
-		for (size_t ii = 0; ii < img_count; ii++) {
-			int start = images[ii].typeStart;
-			int count = (int)images[ii].typeCount;
-			for (int k = 0; k < count && start >= 0 && (size_t) (start + k) < type_count; k++) {
-				type2img[start + k] = (int)ii;
-			}
-		}
-	}
+	int *type2img = r2unity_build_type_image_map (images, img_count, type_count);
 
 	long printed = 0;
 	if (methods && types) {
@@ -854,18 +827,18 @@ int main(int argc, char *argv[]) {
 			}
 			Il2CppMethodDefinition *m = &methods[j];
 			const Il2CppTypeDefinition *td = NULL;
+			size_t type_idx = 0;
 			if (m->declaringType >= 0 && (size_t)m->declaringType < type_count) {
+				type_idx = (size_t)m->declaringType;
 				td = &types[m->declaringType];
 			}
 			ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[j]: 0;
 			const Il2CppImageDefinition *img = NULL;
-			if (type2img && td) {
-				int ii = type2img[m->declaringType];
-				if (ii >= 0 && (size_t)ii < img_count) {
-					img = &images[ii];
-				}
+			int ii = r2unity_image_index_for_method (type2img, type_count, m);
+			if (ii >= 0 && (size_t)ii < img_count) {
+				img = &images[ii];
 			}
-			if (emit_r2_method (meta, m, td, img, type2img != NULL, addr)) {
+			if (emit_r2_method (meta, m, td, type_idx, img, type2img != NULL, addr)) {
 				printed++;
 			}
 		}

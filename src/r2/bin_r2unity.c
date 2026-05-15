@@ -343,42 +343,6 @@ static RBinAttribute type_attr(uint32_t flags) {
 	return attr;
 }
 
-static char *type_fullname(R2UnityBinObj *obj, const Il2CppTypeDefinition *td, size_t idx) {
-	char *ns = td? get_string (obj, td->namespaceIndex): NULL;
-	char *tn = td? get_string (obj, td->nameIndex): NULL;
-	char *out;
-	if (ns && *ns && tn && *tn) {
-		out = r_str_newf ("%s.%s", ns, tn);
-	} else if (tn && *tn) {
-		out = strdup (tn);
-	} else {
-		out = r_str_newf ("type.%zu", idx);
-	}
-	free (ns);
-	free (tn);
-	return out;
-}
-
-static char *method_fullname(R2UnityBinObj *obj,
-	const Il2CppMethodDefinition *m,
-	const Il2CppTypeDefinition *types,
-	size_t type_count) {
-	char *mn = get_string (obj, m->nameIndex);
-	if (!mn) {
-		return NULL;
-	}
-	char *owner = NULL;
-	if (m->declaringType >= 0 && (size_t)m->declaringType < type_count) {
-		owner = type_fullname (obj, &types[m->declaringType], (size_t)m->declaringType);
-	}
-	char *out = owner && *owner
-		? r_str_newf ("%s.%s(%u)", owner, mn, (unsigned)m->parameterCount)
-		: r_str_newf ("%s(%u)", mn, (unsigned)m->parameterCount);
-	free (owner);
-	free (mn);
-	return out;
-}
-
 static RBinSymbol *new_symbol(const char *name, ut64 paddr, ut64 size, const char *type, RBinAttribute attr, const char *classname, int ordinal) {
 	RBinSymbol *sym = r_bin_symbol_new (name, paddr, paddr);
 	if (!sym) {
@@ -491,7 +455,7 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 	Il2CppMetadataSection type_sec;
 	r2unity_metadata_section (meta, R2U_SEC_TYPE_DEFINITIONS, &type_sec);
 	for (size_t i = 0; types && i < type_count; i++) {
-		char *name = type_fullname (obj, &types[i], i);
+		char *name = r2unity_type_fullname (meta, &types[i], i, R2U_NAME_FALLBACK_TYPE);
 		RBinSymbol *sym = new_symbol (name, type_sec.offset + i * type_entry, type_entry, R_BIN_TYPE_OBJECT_STR, type_attr (types[i].flags), NULL, ordinal++);
 		append_symbol (ret, sym);
 		free (name);
@@ -503,14 +467,20 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 	Il2CppMetadataSection method_sec;
 	r2unity_metadata_section (meta, R2U_SEC_METHODS, &method_sec);
 	for (size_t i = 0; methods && i < method_count; i++) {
-		char *name = method_fullname (obj, &methods[i], types, type_count);
+		const Il2CppTypeDefinition *td = NULL;
+		size_t type_idx = 0;
+		if (methods[i].declaringType >= 0 && (size_t)methods[i].declaringType < type_count) {
+			type_idx = (size_t)methods[i].declaringType;
+			td = &types[type_idx];
+		}
+		char *name = r2unity_method_fullname (meta, &methods[i], td, type_idx, R2U_NAME_WITH_PARAMS | R2U_NAME_FALLBACK_TYPE);
 		if (!name) {
 			continue;
 		}
 		char *mn = get_string (obj, methods[i].nameIndex);
 		char *classname = NULL;
-		if (methods[i].declaringType >= 0 && (size_t)methods[i].declaringType < type_count) {
-			classname = type_fullname (obj, &types[methods[i].declaringType], (size_t)methods[i].declaringType);
+		if (td) {
+			classname = r2unity_type_fullname (meta, td, type_idx, R2U_NAME_FALLBACK_TYPE);
 		}
 		RBinSymbol *sym = new_symbol (name, method_sec.offset + i * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[i].flags, mn), classname, ordinal++);
 		append_symbol (ret, sym);
@@ -578,7 +548,13 @@ static RList *classes(RBinFile *bf) {
 		int count = types[i].method_count;
 		for (int k = 0; methods && k < count && start >= 0 && (size_t)(start + k) < method_count; k++) {
 			size_t mi = (size_t)(start + k);
-			char *mname = method_fullname (obj, &methods[mi], types, type_count);
+			const Il2CppTypeDefinition *td = &types[i];
+			size_t type_idx = i;
+			if (methods[mi].declaringType >= 0 && (size_t)methods[mi].declaringType < type_count) {
+				type_idx = (size_t)methods[mi].declaringType;
+				td = &types[type_idx];
+			}
+			char *mname = r2unity_method_fullname (meta, &methods[mi], td, type_idx, R2U_NAME_WITH_PARAMS | R2U_NAME_FALLBACK_TYPE);
 			char *raw = get_string (obj, methods[mi].nameIndex);
 			RBinSymbol *sym = new_symbol (mname? mname: raw, method_sec.offset + mi * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[mi].flags, raw), NULL, (int)mi);
 			append_class_method (klass, sym);

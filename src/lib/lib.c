@@ -576,6 +576,75 @@ R_API char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index) {
 	return str;
 }
 
+R_API char *r2unity_type_fullname(R2UnityMetadata *meta, const Il2CppTypeDefinition *td, size_t type_idx, int flags) {
+	R_RETURN_VAL_IF_FAIL (meta, NULL);
+	if (!td) {
+		return NULL;
+	}
+	char *ns = r2unity_get_string (meta, td->namespaceIndex);
+	char *tn = r2unity_get_string (meta, td->nameIndex);
+	char *out = NULL;
+	if (ns && *ns && tn && *tn) {
+		out = r_str_newf ("%s.%s", ns, tn);
+	} else if (tn && *tn) {
+		out = strdup (tn);
+	} else if (flags & R2U_NAME_FALLBACK_TYPE) {
+		out = r_str_newf ("type.%zu", type_idx);
+	}
+	free (ns);
+	free (tn);
+	return out;
+}
+
+R_API char *r2unity_method_fullname(R2UnityMetadata *meta, const Il2CppMethodDefinition *m, const Il2CppTypeDefinition *td, size_t type_idx, int flags) {
+	R_RETURN_VAL_IF_FAIL (meta && m, NULL);
+	char *mn = r2unity_get_string (meta, m->nameIndex);
+	if (!mn) {
+		return NULL;
+	}
+	char *out = NULL;
+	if (flags & R2U_NAME_FALLBACK_TYPE) {
+		const bool with_params = flags & R2U_NAME_WITH_PARAMS;
+		char *owner = r2unity_type_fullname (meta, td, type_idx, flags);
+		if (owner && *owner) {
+			out = with_params
+				? r_str_newf ("%s.%s(%u)", owner, mn, (unsigned)m->parameterCount)
+				: r_str_newf ("%s.%s", owner, mn);
+		} else {
+			out = with_params
+				? r_str_newf ("%s(%u)", mn, (unsigned)m->parameterCount)
+				: strdup (mn);
+		}
+		free (owner);
+		free (mn);
+		return out;
+	}
+
+	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
+	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
+	if (flags & R2U_NAME_WITH_PARAMS) {
+		if (ns && *ns) {
+			out = r_str_newf ("%s.%s.%s(%u)", ns, tn? tn: "", mn, (unsigned)m->parameterCount);
+		} else if (tn && *tn) {
+			out = r_str_newf ("%s.%s(%u)", tn, mn, (unsigned)m->parameterCount);
+		} else {
+			out = r_str_newf ("%s(%u)", mn, (unsigned)m->parameterCount);
+		}
+	} else {
+		if (ns && *ns && tn && *tn) {
+			out = r_str_newf ("%s.%s.%s", ns, tn, mn);
+		} else if (tn && *tn) {
+			out = r_str_newf ("%s.%s", tn, mn);
+		} else {
+			out = strdup (mn);
+		}
+	}
+	free (ns);
+	free (tn);
+	free (mn);
+	return out;
+}
+
 R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
@@ -900,9 +969,7 @@ static int cmp_tokidx(const void *a, const void *b) {
 	return (ta < tb)? -1: (ta > tb);
 }
 
-/* Build a typeIndex -> imageIndex map once per enumeration pass. Returns NULL
- * if no images are known or the type table is empty. */
-static int *build_type2img(const Il2CppImageDefinition *images, size_t image_count, size_t type_count) {
+R_API int *r2unity_build_type_image_map(const Il2CppImageDefinition *images, size_t image_count, size_t type_count) {
 	if (!images || !type_count) {
 		return NULL;
 	}
@@ -926,37 +993,12 @@ static int *build_type2img(const Il2CppImageDefinition *images, size_t image_cou
 	return type2img;
 }
 
-/* Resolve the owning image (DLL) of a given method via its declaring type. */
-static int image_index_for_method(const int *type2img, size_t type_count, const Il2CppMethodDefinition *m) {
+R_API int r2unity_image_index_for_method(const int *type2img, size_t type_count, const Il2CppMethodDefinition *m) {
+	R_RETURN_VAL_IF_FAIL (m, -1);
 	if (!type2img || m->declaringType < 0 || (size_t)m->declaringType >= type_count) {
 		return -1;
 	}
 	return type2img[m->declaringType];
-}
-
-static char *build_qualified_name(R2UnityMetadata *meta,
-	const Il2CppTypeDefinition *td,
-	uint32_t method_name_idx) {
-	char *ns = td? r2unity_get_string (meta, td->namespaceIndex): NULL;
-	char *tn = td? r2unity_get_string (meta, td->nameIndex): NULL;
-	char *mn = r2unity_get_string (meta, method_name_idx);
-	if (!mn) {
-		free (ns);
-		free (tn);
-		return NULL;
-	}
-	char *out;
-	if (ns && *ns && tn && *tn) {
-		out = r_str_newf ("%s.%s.%s", ns, tn, mn);
-	} else if (tn && *tn) {
-		out = r_str_newf ("%s.%s", tn, mn);
-	} else {
-		out = strdup (mn);
-	}
-	free (ns);
-	free (tn);
-	free (mn);
-	return out;
 }
 
 /* Shared context for P/Invoke and reverse P/Invoke enumeration. */
@@ -980,7 +1022,7 @@ static bool interop_ctx_init(InteropCtx *c, R2UnityMetadata *meta) {
 	}
 	c->types = r2unity_get_type_definitions (meta, &c->type_count);
 	c->images = r2unity_get_images (meta, &c->image_count);
-	c->type2img = build_type2img (c->images, c->image_count, c->type_count);
+	c->type2img = r2unity_build_type_image_map (c->images, c->image_count, c->type_count);
 	return true;
 }
 
@@ -1006,9 +1048,9 @@ static void interop_fill(R2UnityInterop *it, const InteropCtx *c, int32_t method
 	if (c->types && m->declaringType >= 0 && (size_t)m->declaringType < c->type_count) {
 		td = &c->types[m->declaringType];
 	}
-	it->name = build_qualified_name (c->meta, td, m->nameIndex);
+	it->name = r2unity_method_fullname (c->meta, m, td, (size_t)m->declaringType, 0);
 
-	int img_idx = image_index_for_method (c->type2img, c->type_count, m);
+	int img_idx = r2unity_image_index_for_method (c->type2img, c->type_count, m);
 	it->image_index = img_idx;
 	if (img_idx >= 0 && c->images && (size_t)img_idx < c->image_count) {
 		it->image_name = r2unity_get_string (c->meta, c->images[img_idx].nameIndex);
@@ -1220,7 +1262,7 @@ static bool tokindex_build(TokIndex *t, const InteropCtx *c) {
 		return false;
 	}
 	for (size_t j = 0; j < c->method_count; j++) {
-		int ii = image_index_for_method (c->type2img, c->type_count, &c->methods[j]);
+		int ii = r2unity_image_index_for_method (c->type2img, c->type_count, &c->methods[j]);
 		if (ii < 0 || (size_t)ii >= c->image_count || !c->methods[j].token) {
 			continue;
 		}
@@ -1233,7 +1275,7 @@ static bool tokindex_build(TokIndex *t, const InteropCtx *c) {
 		t->count[ii] = 0;
 	}
 	for (size_t j = 0; j < c->method_count; j++) {
-		int ii = image_index_for_method (c->type2img, c->type_count, &c->methods[j]);
+		int ii = r2unity_image_index_for_method (c->type2img, c->type_count, &c->methods[j]);
 		if (ii < 0 || (size_t)ii >= c->image_count || !c->methods[j].token) {
 			continue;
 		}

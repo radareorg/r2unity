@@ -183,15 +183,24 @@ typedef struct {
 	uint8_t confidence; /* 0..100 */
 } R2UnityInterop;
 
+typedef enum {
+	R2U_NAME_WITH_PARAMS = 1,
+	R2U_NAME_FALLBACK_TYPE = 2
+} R2UnityNameFlags;
+
 R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf);
 R_API void r2unity_free_metadata(R2UnityMetadata *meta);
 /* Caller owns the returned string and must free() it. NULL on missing/empty. */
 R_API char *r2unity_get_string(R2UnityMetadata *meta, uint32_t index);
+R_API char *r2unity_type_fullname(R2UnityMetadata *meta, const Il2CppTypeDefinition *td, size_t type_idx, int flags);
+R_API char *r2unity_method_fullname(R2UnityMetadata *meta, const Il2CppMethodDefinition *m, const Il2CppTypeDefinition *td, size_t type_idx, int flags);
 R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, size_t *count);
 R_API bool r2unity_read_string_literal(R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions(R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *meta, size_t *count);
 R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count);
+R_API int *r2unity_build_type_image_map(const Il2CppImageDefinition *images, size_t image_count, size_t type_count);
+R_API int r2unity_image_index_for_method(const int *type2img, size_t type_count, const Il2CppMethodDefinition *m);
 R_API Il2CppAssemblyDefinition *r2unity_get_assemblies(R2UnityMetadata *meta, size_t *count);
 R_API int32_t *r2unity_get_referenced_assemblies(R2UnityMetadata *meta, size_t *count);
 R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *count);
