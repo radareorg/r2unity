@@ -16,6 +16,12 @@
 #define R2UNITY_BIN_VEC_ABI 0
 #endif
 
+#if R2_ABIVERSION >= 104
+#define R2UNITY_BIN_STRINGS_VEC_ABI 1
+#else
+#define R2UNITY_BIN_STRINGS_VEC_ABI 0
+#endif
+
 typedef struct {
 	R2UnityMetadata *meta;
 	RBuffer *buf;
@@ -572,8 +578,38 @@ static RList *classes(RBinFile *bf) {
 	return ret;
 }
 
-static void append_bin_string(RList *ret, char *text, ut64 paddr, ut32 size, ut32 ordinal) {
+#if R2UNITY_BIN_STRINGS_VEC_ABI
+typedef RVecRBinString R2UnityStringSink;
+
+static void append_bin_string(R2UnityStringSink *ret, char *text, ut64 paddr, ut32 size, ut32 ordinal) {
+	if (!text) {
+		return;
+	}
+	RBinString *str = RVecRBinString_emplace_back (ret);
+	if (!str) {
+		free (text);
+		return;
+	}
+	str->string = text;
+	str->paddr = paddr;
+	str->vaddr = paddr;
+	str->size = size;
+	str->length = strlen (text);
+	str->ordinal = ordinal;
+	str->type = R_STRING_TYPE_UTF8;
+}
+#else
+typedef RList R2UnityStringSink;
+
+static void append_bin_string(R2UnityStringSink *ret, char *text, ut64 paddr, ut32 size, ut32 ordinal) {
+	if (!text) {
+		return;
+	}
 	RBinString *str = R_NEW0 (RBinString);
+	if (!str) {
+		free (text);
+		return;
+	}
 	str->string = text;
 	str->paddr = paddr;
 	str->vaddr = paddr;
@@ -583,8 +619,9 @@ static void append_bin_string(RList *ret, char *text, ut64 paddr, ut32 size, ut3
 	str->type = R_STRING_TYPE_UTF8;
 	r_list_append (ret, str);
 }
+#endif
 
-static void add_metadata_strings(R2UnityBinObj *obj, RList *ret, ut32 *ordinal) {
+static void add_metadata_strings(R2UnityBinObj *obj, R2UnityStringSink *ret, ut32 *ordinal) {
 	if (!obj->strings || !obj->strings_size) {
 		return;
 	}
@@ -608,7 +645,7 @@ static void add_metadata_strings(R2UnityBinObj *obj, RList *ret, ut32 *ordinal) 
 	}
 }
 
-static void add_literal_strings(R2UnityBinObj *obj, RList *ret, ut32 *ordinal) {
+static void add_literal_strings(R2UnityBinObj *obj, R2UnityStringSink *ret, ut32 *ordinal) {
 	size_t count = 0;
 	Il2CppStringLiteral *lits = r2unity_get_string_literals (obj->meta, &count);
 	for (size_t i = 0; lits && i < count; i++) {
@@ -626,15 +663,33 @@ static void add_literal_strings(R2UnityBinObj *obj, RList *ret, ut32 *ordinal) {
 	R_FREE (lits);
 }
 
-static RList *strings(RBinFile *bf) {
+#if R2UNITY_BIN_STRINGS_VEC_ABI
+static RVecRBinString *strings(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
-	RList *ret = r_list_newf ((RListFree)r_bin_string_free);
+	RVecRBinString *ret = RVecRBinString_new ();
+	if (!ret) {
+		return NULL;
+	}
 	ut32 ordinal = 0;
 	add_metadata_strings (obj, ret, &ordinal);
 	add_literal_strings (obj, ret, &ordinal);
 	return ret;
 }
+#else
+static RList *strings(RBinFile *bf) {
+	R2UnityBinObj *obj = get_obj (bf);
+	R_RETURN_VAL_IF_FAIL (obj, NULL);
+	RList *ret = r_list_newf ((RListFree)r_bin_string_free);
+	if (!ret) {
+		return NULL;
+	}
+	ut32 ordinal = 0;
+	add_metadata_strings (obj, ret, &ordinal);
+	add_literal_strings (obj, ret, &ordinal);
+	return ret;
+}
+#endif
 
 #if R2UNITY_BIN_VEC_ABI
 typedef RVecRBinImport R2UnityImportSink;

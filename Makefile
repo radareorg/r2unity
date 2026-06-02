@@ -40,7 +40,7 @@ R2PM_BINDIR=$(shell r2pm -H R2PM_BINDIR)
 
 all: $(EXEC)
 
-plugin: $(PLUGINS)
+r2 plugin: $(PLUGINS)
 
 install-plugin: $(PLUGINS)
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
