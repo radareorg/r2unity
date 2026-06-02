@@ -231,9 +231,6 @@ static void section_free(void *p) {
 
 static RBinSection *new_section(const char *name, ut64 off, ut64 size, bool has_strings) {
 	RBinSection *sec = R_NEW0 (RBinSection);
-	if (!sec) {
-		return NULL;
-	}
 	init_section (sec, name, off, size, has_strings);
 	return sec;
 }
@@ -511,7 +508,7 @@ static bool symbols_vec(RBinFile *bf) {
 #else
 static RList *symbols(RBinFile *bf) {
 	RList *ret = r_list_newf ((RListFree)r_bin_symbol_free);
-	if (!ret || !symbols_fill (bf, ret)) {
+	if (!symbols_fill (bf, ret)) {
 		r_list_free (ret);
 		return NULL;
 	}
@@ -606,10 +603,6 @@ static void append_bin_string(R2UnityStringSink *ret, char *text, ut64 paddr, ut
 		return;
 	}
 	RBinString *str = R_NEW0 (RBinString);
-	if (!str) {
-		free (text);
-		return;
-	}
 	str->string = text;
 	str->paddr = paddr;
 	str->vaddr = paddr;
@@ -681,9 +674,6 @@ static RList *strings(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RList *ret = r_list_newf ((RListFree)r_bin_string_free);
-	if (!ret) {
-		return NULL;
-	}
 	ut32 ordinal = 0;
 	add_metadata_strings (obj, ret, &ordinal);
 	add_literal_strings (obj, ret, &ordinal);
@@ -695,9 +685,6 @@ static RList *strings(RBinFile *bf) {
 typedef RVecRBinImport R2UnityImportSink;
 
 static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
-	if (!imp) {
-		return;
-	}
 	RBinImport *dst = RVecRBinImport_emplace_back (ret);
 	if (!dst) {
 		r_bin_import_free (imp);
@@ -710,9 +697,7 @@ static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
 typedef RList R2UnityImportSink;
 
 static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
-	if (imp) {
-		r_list_append (ret, imp);
-	}
+	r_list_append (ret, imp);
 }
 #endif
 
@@ -745,7 +730,7 @@ static bool imports_vec(RBinFile *bf) {
 #else
 static RList *imports(RBinFile *bf) {
 	RList *ret = r_list_newf ((RListFree)r_bin_import_free);
-	if (!ret || !imports_fill (bf, ret)) {
+	if (!imports_fill (bf, ret)) {
 		r_list_free (ret);
 		return NULL;
 	}

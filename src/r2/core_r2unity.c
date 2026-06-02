@@ -11,6 +11,7 @@ static const char *g_help_msg[] = {
 	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
 	"r2unity", "", "show this help",
 	"r2unity?", "", "show this help",
+	"r2unity-c", "[*j]", "enumerate classes, inheritance, methods, and fields",
 	"r2unity-D", "", "auto-detect companion files from current binary path",
 	"r2unity-i", "[j]", "summary (metadata version, type/method counts)",
 	"r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments",
@@ -282,6 +283,415 @@ static bool find_method_pointers(R2UnityMetadata *meta, const char *path, ut64 *
 		return r2unity_find_method_pointers_pe (meta, path, out_ptrs);
 	}
 	return false;
+}
+
+static int type_definition_for_type_index(const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index) {
+	if (type_index >= 0) {
+		for (size_t i = 0; i < type_count; i++) {
+			if (types[i].byvalTypeIndex == type_index) {
+				return (int)i;
+			}
+		}
+	}
+	return -1;
+}
+
+static char *type_name_from_index(R2UnityMetadata *meta, const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index, bool fallback) {
+	int idx = type_definition_for_type_index (types, type_count, type_index);
+	if (idx >= 0) {
+		return r2unity_type_fullname (meta, &types[idx], (size_t)idx, R2U_NAME_FALLBACK_TYPE);
+	}
+	if (fallback && type_index >= 0) {
+		return r_str_newf ("type_index.%d", type_index);
+	}
+	return NULL;
+}
+
+static char *field_name_or_fallback(R2UnityMetadata *meta, const Il2CppFieldDefinition *field, size_t index) {
+	char *name = r2unity_get_string (meta, field->nameIndex);
+	if (R_STR_ISNOTEMPTY (name)) {
+		return name;
+	}
+	free (name);
+	return r_str_newf ("field.%zu", index);
+}
+
+static char *method_name_or_fallback(R2UnityMetadata *meta, const Il2CppMethodDefinition *method, size_t index) {
+	char *name = r2unity_get_string (meta, method->nameIndex);
+	if (R_STR_ISNOTEMPTY (name)) {
+		return name;
+	}
+	free (name);
+	return r_str_newf ("method.%zu", index);
+}
+
+static void sanitize_ic_name(char *s) {
+	if (!s) {
+		return;
+	}
+	r_name_filter (s, -1);
+	for (char *p = s; *p; p++) {
+		if (*p == '.' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+			*p = '_';
+		}
+	}
+}
+
+static char *r2_class_name(const char *name, size_t index) {
+	char *out = (name && *name)? strdup (name): r_str_newf ("type_%zu", index);
+	sanitize_ic_name (out);
+	if (!out || !*out) {
+		free (out);
+		out = r_str_newf ("type_%zu", index);
+	}
+	return out;
+}
+
+static char *r2_method_name(const char *name, size_t index) {
+	char *out = (name && *name)? r_str_newf ("%s_%zu", name, index): r_str_newf ("method_%zu", index);
+	sanitize_ic_name (out);
+	if (!out || !*out) {
+		free (out);
+		out = r_str_newf ("method_%zu", index);
+	}
+	return out;
+}
+
+static char *r2_field_name(const char *name, size_t index) {
+	char *out = (name && *name)? strdup (name): r_str_newf ("field_%zu", index);
+	sanitize_ic_name (out);
+	if (!out || !*out) {
+		free (out);
+		out = r_str_newf ("field_%zu", index);
+	}
+	return out;
+}
+
+static void pj_hex(PJ *pj, const char *key, ut64 value, int width) {
+	char hex[64];
+	snprintf (hex, sizeof (hex), "0x%0*" PFMT64x, width, value);
+	pj_ks (pj, key, hex);
+}
+
+static void pj_string_or_null(PJ *pj, const char *key, const char *value) {
+	if (value) {
+		pj_ks (pj, key, value);
+	} else {
+		pj_knull (pj, key);
+	}
+}
+
+static void emit_class_text(RCore *core,
+	R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const int32_t *interfaces,
+	size_t interface_count,
+	size_t type_index) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, true);
+	r_cons_printf (core->cons, "class %zu %s", type_index, name? name: "-");
+	if (base) {
+		r_cons_printf (core->cons, " : %s", base);
+	}
+	if (interfaces && td->interfaces_count > 0 && td->interfacesStart >= 0) {
+		bool first = true;
+		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
+			char *iname = type_name_from_index (meta, types, type_count, interfaces[td->interfacesStart + k], true);
+			if (iname) {
+				r_cons_printf (core->cons, "%s%s", first? " implements ": ", ", iname);
+				first = false;
+			}
+			free (iname);
+		}
+	}
+	r_cons_printf (core->cons, " token=0x%08x fields=%u methods=%u\n", td->token, (unsigned)td->field_count, (unsigned)td->method_count);
+
+	int fstart = td->fieldStart;
+	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+		size_t fi = (size_t)(fstart + k);
+		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+		r_cons_printf (core->cons, "  field  %zu %s %s token=0x%08x type_index=%d\n",
+			fi,
+			ftype? ftype: "-",
+			fname? fname: "-",
+			fields[fi].token,
+			fields[fi].typeIndex);
+		free (ftype);
+		free (fname);
+	}
+
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *attrs = method_attrs_str (methods[mi].flags);
+		r_cons_printf (core->cons, "  method %zu %s%s%s(%u) token=0x%08x flags=0x%04x\n",
+			mi,
+			attrs && *attrs? attrs: "",
+			attrs && *attrs? " ": "",
+			mname? mname: "-",
+			(unsigned)methods[mi].parameterCount,
+			methods[mi].token,
+			methods[mi].flags);
+		free (attrs);
+		free (mname);
+	}
+	free (base);
+	free (name);
+}
+
+static void emit_class_json(PJ *pj,
+	R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const int32_t *interfaces,
+	size_t interface_count,
+	const ut64 *method_ptrs,
+	bool has_ptrs,
+	size_t type_index) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *ns = r2unity_get_string (meta, td->namespaceIndex);
+	char *short_name = r2unity_get_string (meta, td->nameIndex);
+	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, true);
+	pj_o (pj);
+	pj_kn (pj, "index", (ut64)type_index);
+	pj_string_or_null (pj, "name", name);
+	pj_string_or_null (pj, "namespace", ns);
+	pj_string_or_null (pj, "short_name", short_name);
+	pj_string_or_null (pj, "base", base);
+	pj_ki (pj, "base_type_index", td->parentIndex);
+	pj_hex (pj, "flags", td->flags, 8);
+	pj_hex (pj, "token", td->token, 8);
+
+	pj_ka (pj, "interfaces");
+	if (interfaces && td->interfaces_count > 0 && td->interfacesStart >= 0) {
+		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
+			int32_t idx = interfaces[td->interfacesStart + k];
+			char *iname = type_name_from_index (meta, types, type_count, idx, true);
+			pj_o (pj);
+			pj_ki (pj, "type_index", idx);
+			pj_string_or_null (pj, "name", iname);
+			pj_end (pj);
+			free (iname);
+		}
+	}
+	pj_end (pj);
+
+	pj_ka (pj, "fields");
+	int fstart = td->fieldStart;
+	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+		size_t fi = (size_t)(fstart + k);
+		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+		pj_o (pj);
+		pj_kn (pj, "index", (ut64)fi);
+		pj_string_or_null (pj, "name", fname);
+		pj_ki (pj, "type_index", fields[fi].typeIndex);
+		pj_string_or_null (pj, "type", ftype);
+		pj_hex (pj, "token", fields[fi].token, 8);
+		pj_end (pj);
+		free (ftype);
+		free (fname);
+	}
+	pj_end (pj);
+
+	pj_ka (pj, "methods");
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *fullname = r2unity_method_fullname (meta, &methods[mi], td, type_index, R2U_NAME_WITH_PARAMS | R2U_NAME_FALLBACK_TYPE);
+		char *attrs = method_attrs_str (methods[mi].flags);
+		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[mi]: 0;
+		pj_o (pj);
+		pj_kn (pj, "index", (ut64)mi);
+		pj_string_or_null (pj, "name", mname);
+		pj_string_or_null (pj, "full_name", fullname);
+		pj_kn (pj, "parameter_count", (ut64)methods[mi].parameterCount);
+		pj_kn (pj, "addr", addr);
+		pj_hex (pj, "token", methods[mi].token, 8);
+		pj_hex (pj, "flags", methods[mi].flags, 4);
+		pj_hex (pj, "iflags", methods[mi].iflags, 4);
+		pj_string_or_null (pj, "attrs", (attrs && *attrs)? attrs: NULL);
+		pj_end (pj);
+		free (attrs);
+		free (fullname);
+		free (mname);
+	}
+	pj_end (pj);
+	pj_end (pj);
+	free (base);
+	free (short_name);
+	free (ns);
+	free (name);
+}
+
+static void emit_class_r2(RCore *core,
+	R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const int32_t *interfaces,
+	size_t interface_count,
+	const ut64 *method_ptrs,
+	bool has_ptrs,
+	size_t type_index) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *r2klass = r2_class_name (name, type_index);
+	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, false);
+	if (base) {
+		r_cons_printf (core->cons, "# class %s : %s\n", name? name: r2klass, base);
+	} else {
+		r_cons_printf (core->cons, "# class %s\n", name? name: r2klass);
+	}
+	r_cons_printf (core->cons, "ic+%s @ 0\n", r2klass);
+	if (base) {
+		char *r2base = r2_class_name (base, 0);
+		r_cons_printf (core->cons, "ic+%s:%s @ 0\n", r2klass, r2base);
+		free (r2base);
+	}
+	free (base);
+	if (interfaces && td->interfaces_count > 0 && td->interfacesStart >= 0) {
+		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
+			char *iname = type_name_from_index (meta, types, type_count, interfaces[td->interfacesStart + k], false);
+			if (iname) {
+				char *r2iface = r2_class_name (iname, 0);
+				r_cons_printf (core->cons, "ic+%s:%s @ 0\n", r2klass, r2iface);
+				free (r2iface);
+			}
+			free (iname);
+		}
+	}
+
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[mi]: 0;
+		addr = addr > 0x1000? addr: 0;
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *r2meth = r2_method_name (mname, mi);
+		r_cons_printf (core->cons, "ic+%s.%s @ 0x%" PFMT64x "\n", r2klass, r2meth, addr);
+		free (r2meth);
+		free (mname);
+	}
+
+	int fstart = td->fieldStart;
+	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+		size_t fi = (size_t)(fstart + k);
+		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+		char *r2field = r2_field_name (fname, fi);
+		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+		r_cons_printf (core->cons, "ic+%s..%s %s @ 0\n",
+			r2klass,
+			r2field,
+			ftype? ftype: "unknown");
+		free (ftype);
+		free (r2field);
+		free (fname);
+	}
+	free (r2klass);
+	free (name);
+}
+
+static int cmd_classes(RCore *core, char mode) {
+	const char *metadata_path = resolve_metadata_path (core);
+	RBuffer *buf = NULL;
+	R2UnityMetadata *meta = open_metadata (core, &buf);
+	if (!meta) {
+		return 1;
+	}
+	size_t type_count = 0;
+	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
+	if (!types) {
+		R_LOG_ERROR ("unable to decode type definitions");
+		close_metadata (meta, buf);
+		return 1;
+	}
+	size_t method_count = 0;
+	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	size_t field_count = 0;
+	Il2CppFieldDefinition *fields = r2unity_get_field_definitions (meta, &field_count);
+	size_t interface_count = 0;
+	int32_t *interfaces = r2unity_get_type_index_table (meta, R2U_SEC_INTERFACES, &interface_count);
+
+	ut64 *method_ptrs = NULL;
+	bool has_ptrs = false;
+	const char *lib = resolve_library_path (core);
+	if (lib && *lib) {
+		has_ptrs = find_method_pointers (meta, lib, &method_ptrs);
+	}
+	if (method_ptrs && !has_ptrs) {
+		for (size_t k = 0; k < method_count; k++) {
+			if (method_ptrs[k]) {
+				has_ptrs = true;
+				break;
+			}
+		}
+	}
+
+	if (mode == 'j') {
+		PJ *pj = pj_new ();
+		pj_o (pj);
+		pj_kb (pj, "ok", true);
+		pj_ki (pj, "version", meta->version);
+		pj_ks (pj, "unity_range", r2unity_unity_range_from_wire (meta->version));
+		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_kn (pj, "types", (ut64)type_count);
+		pj_kn (pj, "methods", (ut64)method_count);
+		pj_kn (pj, "fields", (ut64)field_count);
+		pj_ka (pj, "classes");
+		for (size_t i = 0; i < type_count; i++) {
+			emit_class_json (pj, meta, types, type_count, methods, method_count, fields, field_count, interfaces, interface_count, method_ptrs, has_ptrs, i);
+		}
+		pj_end (pj);
+		pj_end (pj);
+		r_cons_println (core->cons, pj_string (pj));
+		pj_free (pj);
+	} else if (mode == '*') {
+		r_cons_println (core->cons, "# r2 script generated by r2unity-c");
+		r_cons_printf (core->cons, "# Input file: %s\n", metadata_path && *metadata_path? metadata_path: "-");
+		if (!has_ptrs) {
+			r_cons_println (core->cons, "# Method addresses default to 0; run r2unity-D or set r2unity.library to recover native addresses.");
+		}
+		for (size_t i = 0; i < type_count; i++) {
+			emit_class_r2 (core, meta, types, type_count, methods, method_count, fields, field_count, interfaces, interface_count, method_ptrs, has_ptrs, i);
+		}
+	} else {
+		r_cons_printf (core->cons, "# classes from %s\n", metadata_path && *metadata_path? metadata_path: "-");
+		r_cons_printf (core->cons, "# wire_version=%d (%s) types=%zu methods=%zu fields=%zu\n",
+			meta->version,
+			r2unity_unity_range_from_wire (meta->version),
+			type_count,
+			method_count,
+			field_count);
+		for (size_t i = 0; i < type_count; i++) {
+			emit_class_text (core, meta, types, type_count, methods, method_count, fields, field_count, interfaces, interface_count, i);
+		}
+	}
+
+	R_FREE (method_ptrs);
+	R_FREE (interfaces);
+	R_FREE (fields);
+	R_FREE (methods);
+	R_FREE (types);
+	close_metadata (meta, buf);
+	return 0;
 }
 
 /* ---------- r2unity-s (methods) ---------- */
@@ -678,6 +1088,8 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 	}
 
 	switch (sub) {
+	case 'c':
+		return cmd_classes (core, mode) == 0;
 	case 'D':
 		return cmd_detect (core, mode == 'j') == 0;
 	case 'i':
