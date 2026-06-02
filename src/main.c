@@ -60,15 +60,15 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"\n"
 		"Options:\n"
 		"  -a 0xADDR     Read the method pointer table starting at virtual address 0xADDR\n"
-		"  -c N          Read N pointer entries (pair with -a)\n"
+		"  -c            Enumerate classes, inheritance, methods, and fields\n"
 		"  -D            Detect companion files from the given executable path and exit\n"
 		"  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers\n"
 		"  -h            Show this help and exit\n"
-		"  -j            One-line JSON status, or JSON output with -P/-R/-S\n"
+		"  -j            One-line JSON status, or JSON output with -c/-P/-R/-S\n"
 		"  -l N          Limit emitted entries to N\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
 		"  -q            Quiet mode: omit banner and informational comments\n"
-		"  -r            Emit r2 script commands (flags + comments); pairs with -P\n"
+		"  -r            Emit r2 script commands; pairs with -c/-P/-R\n"
 		"  -R            Enumerate reverse-P/Invoke (native -> managed) methods (v29+)\n"
 		"  -S            Emit a text SBOM of the managed assemblies\n"
 		"  -V            Verbose debug tracing on stderr\n"
@@ -78,6 +78,7 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"Arguments:\n"
 		"  <executable>           Native IL2CPP binary for the target platform\n"
 		"  <global-metadata.dat>  Unity IL2CPP metadata file\n"
+		"                         -c and -z also accept metadata-only input\n"
 		"\n"
 		"Expected files per target platform:\n"
 		"  iOS build:          UnityFramework      + global-metadata.dat\n"
@@ -486,6 +487,420 @@ static bool emit_r2_method(R2UnityMetadata *meta,
 	return true;
 }
 
+static int type_definition_for_type_index(const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index) {
+	if (type_index < 0) {
+		return -1;
+	}
+	for (size_t i = 0; i < type_count; i++) {
+		if (types[i].byvalTypeIndex == type_index) {
+			return (int)i;
+		}
+	}
+	return -1;
+}
+
+static char *type_name_from_index(R2UnityMetadata *meta, const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index, bool fallback) {
+	int idx = type_definition_for_type_index (types, type_count, type_index);
+	if (idx >= 0) {
+		return r2unity_type_fullname (meta, &types[idx], (size_t)idx, R2U_NAME_FALLBACK_TYPE);
+	}
+	if (fallback && type_index >= 0) {
+		return r_str_newf ("type_index.%d", type_index);
+	}
+	return NULL;
+}
+
+static char *field_name_or_fallback(R2UnityMetadata *meta, const Il2CppFieldDefinition *field, size_t index) {
+	char *name = r2unity_get_string (meta, field->nameIndex);
+	if (name && *name) {
+		return name;
+	}
+	free (name);
+	return r_str_newf ("field.%zu", index);
+}
+
+static char *method_name_or_fallback(R2UnityMetadata *meta, const Il2CppMethodDefinition *method, size_t index) {
+	char *name = r2unity_get_string (meta, method->nameIndex);
+	if (name && *name) {
+		return name;
+	}
+	free (name);
+	return r_str_newf ("method.%zu", index);
+}
+
+static void sanitize_ic_name(char *s) {
+	if (!s) {
+		return;
+	}
+	r_name_filter (s, -1);
+	for (char *p = s; *p; p++) {
+		if (*p == '.' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+			*p = '_';
+		}
+	}
+}
+
+static char *r2_class_name(const char *name, size_t index) {
+	char *out = (name && *name)? strdup (name): r_str_newf ("type_%zu", index);
+	sanitize_ic_name (out);
+	if (!out || !*out) {
+		free (out);
+		out = r_str_newf ("type_%zu", index);
+	}
+	return out;
+}
+
+static char *r2_method_name(const char *name, size_t index) {
+	char *out = (name && *name)? strdup (name): r_str_newf ("method_%zu", index);
+	sanitize_ic_name (out);
+	if (!out || !*out) {
+		free (out);
+		out = r_str_newf ("method_%zu", index);
+	}
+	return out;
+}
+
+static void pj_hex(PJ *pj, const char *key, ut64 value, int width) {
+	RStrBuf *sb = r_strbuf_new ("");
+	if (!sb) {
+		pj_knull (pj, key);
+		return;
+	}
+	r_strbuf_appendf (sb, "0x%0*" PFMT64x, width, value);
+	char *s = r_strbuf_drain (sb);
+	pj_ks (pj, key, s? s: "");
+	free (s);
+}
+
+static void pj_string_or_null(PJ *pj, const char *key, const char *value) {
+	if (value) {
+		pj_ks (pj, key, value);
+	} else {
+		pj_knull (pj, key);
+	}
+}
+
+static void emit_class_text(R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const int32_t *interfaces,
+	size_t interface_count,
+	size_t type_index) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, true);
+	printf ("class %zu %s", type_index, name? name: "-");
+	if (base) {
+		printf (" : %s", base);
+	}
+	if (td->interfaces_count > 0 && td->interfacesStart >= 0) {
+		bool first = true;
+		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
+			char *iname = type_name_from_index (meta, types, type_count, interfaces[td->interfacesStart + k], true);
+			if (iname) {
+				printf ("%s%s", first? " implements ": ", ", iname);
+				first = false;
+			}
+			free (iname);
+		}
+	}
+	printf (" token=0x%08x fields=%u methods=%u\n", td->token, (unsigned)td->field_count, (unsigned)td->method_count);
+
+	int fstart = td->fieldStart;
+	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+		size_t fi = (size_t)(fstart + k);
+		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+		printf ("  field  %zu %s %s token=0x%08x type_index=%d\n",
+			fi,
+			ftype? ftype: "-",
+			fname? fname: "-",
+			fields[fi].token,
+			fields[fi].typeIndex);
+		free (ftype);
+		free (fname);
+	}
+
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *attrs = method_attrs (methods[mi].flags);
+		printf ("  method %zu %s%s%s(%u) token=0x%08x flags=0x%04x\n",
+			mi,
+			attrs && *attrs? attrs: "",
+			attrs && *attrs? " ": "",
+			mname? mname: "-",
+			(unsigned)methods[mi].parameterCount,
+			methods[mi].token,
+			methods[mi].flags);
+		free (attrs);
+		free (mname);
+	}
+	free (base);
+	free (name);
+}
+
+static void emit_class_json(PJ *pj,
+	R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const int32_t *interfaces,
+	size_t interface_count,
+	const ut64 *method_ptrs,
+	bool has_ptrs,
+	size_t type_index) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *ns = r2unity_get_string (meta, td->namespaceIndex);
+	char *short_name = r2unity_get_string (meta, td->nameIndex);
+	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, true);
+	pj_o (pj);
+	pj_kn (pj, "index", (ut64)type_index);
+	pj_string_or_null (pj, "name", name);
+	pj_string_or_null (pj, "namespace", ns);
+	pj_string_or_null (pj, "short_name", short_name);
+	pj_string_or_null (pj, "base", base);
+	pj_ki (pj, "base_type_index", td->parentIndex);
+	pj_hex (pj, "flags", td->flags, 8);
+	pj_hex (pj, "token", td->token, 8);
+
+	pj_ka (pj, "interfaces");
+	if (td->interfaces_count > 0 && td->interfacesStart >= 0) {
+		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
+			int32_t idx = interfaces[td->interfacesStart + k];
+			char *iname = type_name_from_index (meta, types, type_count, idx, true);
+			pj_o (pj);
+			pj_ki (pj, "type_index", idx);
+			pj_string_or_null (pj, "name", iname);
+			pj_end (pj);
+			free (iname);
+		}
+	}
+	pj_end (pj);
+
+	pj_ka (pj, "fields");
+	int fstart = td->fieldStart;
+	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+		size_t fi = (size_t)(fstart + k);
+		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+		pj_o (pj);
+		pj_kn (pj, "index", (ut64)fi);
+		pj_string_or_null (pj, "name", fname);
+		pj_ki (pj, "type_index", fields[fi].typeIndex);
+		pj_string_or_null (pj, "type", ftype);
+		pj_hex (pj, "token", fields[fi].token, 8);
+		pj_end (pj);
+		free (ftype);
+		free (fname);
+	}
+	pj_end (pj);
+
+	pj_ka (pj, "methods");
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *fullname = r2unity_method_fullname (meta, &methods[mi], td, type_index, R2U_NAME_WITH_PARAMS | R2U_NAME_FALLBACK_TYPE);
+		char *attrs = method_attrs (methods[mi].flags);
+		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[mi]: 0;
+		pj_o (pj);
+		pj_kn (pj, "index", (ut64)mi);
+		pj_string_or_null (pj, "name", mname);
+		pj_string_or_null (pj, "full_name", fullname);
+		pj_kn (pj, "parameter_count", (ut64)methods[mi].parameterCount);
+		pj_kn (pj, "addr", addr);
+		pj_hex (pj, "token", methods[mi].token, 8);
+		pj_hex (pj, "flags", methods[mi].flags, 4);
+		pj_hex (pj, "iflags", methods[mi].iflags, 4);
+		pj_string_or_null (pj, "attrs", (attrs && *attrs)? attrs: NULL);
+		pj_end (pj);
+		free (attrs);
+		free (fullname);
+		free (mname);
+	}
+	pj_end (pj);
+	pj_end (pj);
+	free (base);
+	free (short_name);
+	free (ns);
+	free (name);
+}
+
+static void emit_class_r2(R2UnityMetadata *meta,
+	const Il2CppTypeDefinition *types,
+	size_t type_count,
+	const Il2CppMethodDefinition *methods,
+	size_t method_count,
+	const Il2CppFieldDefinition *fields,
+	size_t field_count,
+	const ut64 *method_ptrs,
+	bool has_ptrs,
+	size_t type_index,
+	bool quiet) {
+	const Il2CppTypeDefinition *td = &types[type_index];
+	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
+	char *r2klass = r2_class_name (name, type_index);
+	if (!quiet) {
+		char *base = type_name_from_index (meta, types, type_count, td->parentIndex, false);
+		if (base) {
+			printf ("# class %s : %s\n", name? name: r2klass, base);
+		} else {
+			printf ("# class %s\n", name? name: r2klass);
+		}
+		free (base);
+	}
+	printf ("ic+%s @ 0\n", r2klass);
+
+	int mstart = td->methodStart;
+	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
+		size_t mi = (size_t)(mstart + k);
+		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[mi]: 0;
+		if (addr <= 0x1000) {
+			continue;
+		}
+		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
+		char *r2meth = r2_method_name (mname, mi);
+		printf ("ic+%s.%s @ 0x%" PFMT64x "\n", r2klass, r2meth, addr);
+		free (r2meth);
+		free (mname);
+	}
+
+	if (!quiet) {
+		int fstart = td->fieldStart;
+		for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
+			size_t fi = (size_t)(fstart + k);
+			char *fname = field_name_or_fallback (meta, &fields[fi], fi);
+			char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
+			printf ("# field %s.%s %s type_index=%d token=0x%08x\n",
+				r2klass,
+				fname? fname: "-",
+				ftype? ftype: "-",
+				fields[fi].typeIndex,
+				fields[fi].token);
+			free (ftype);
+			free (fname);
+		}
+	}
+	free (r2klass);
+	free (name);
+}
+
+static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path, bool as_json, bool as_r2, bool fast, bool quiet, long limit) {
+	if (as_json && as_r2) {
+		R_LOG_ERROR ("-j and -r are mutually exclusive with -c");
+		return 1;
+	}
+	if (fast && (!exe_path || !*exe_path)) {
+		R_LOG_ERROR ("-c -f requires both executable and metadata paths");
+		return 1;
+	}
+
+	size_t type_count = 0;
+	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
+	if (!types) {
+		R_LOG_ERROR ("unable to decode type definitions");
+		return 1;
+	}
+	size_t method_count = 0;
+	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	size_t field_count = 0;
+	Il2CppFieldDefinition *fields = r2unity_get_field_definitions (meta, &field_count);
+	size_t interface_count = 0;
+	int32_t *interfaces = r2unity_get_type_index_table (meta, R2U_SEC_INTERFACES, &interface_count);
+
+	ut64 *method_ptrs = NULL;
+	bool has_ptrs = false;
+	if (fast) {
+		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
+	}
+	if (method_ptrs && !has_ptrs) {
+		for (size_t k = 0; k < method_count; k++) {
+			if (method_ptrs[k]) {
+				has_ptrs = true;
+				break;
+			}
+		}
+	}
+
+	size_t max = type_count;
+	if (limit >= 0 && (size_t)limit < max) {
+		max = (size_t)limit;
+	}
+
+	if (as_json) {
+		PJ *pj = pj_new ();
+		if (!pj) {
+			R_LOG_ERROR ("unable to allocate JSON builder");
+			R_FREE (method_ptrs);
+			R_FREE (interfaces);
+			R_FREE (fields);
+			R_FREE (methods);
+			R_FREE (types);
+			return 1;
+		}
+		pj_o (pj);
+		pj_kb (pj, "ok", true);
+		pj_ki (pj, "version", meta->version);
+		pj_ks (pj, "unity_range", r2unity_unity_range_from_wire (meta->version));
+		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_kn (pj, "types", (ut64)type_count);
+		pj_kn (pj, "methods", (ut64)method_count);
+		pj_kn (pj, "fields", (ut64)field_count);
+		pj_ka (pj, "classes");
+		for (size_t i = 0; i < max; i++) {
+			emit_class_json (pj, meta, types, type_count, methods, method_count, fields, field_count, interfaces, interface_count, method_ptrs, has_ptrs, i);
+		}
+		pj_end (pj);
+		pj_end (pj);
+		char *out = pj_drain (pj);
+		if (out) {
+			puts (out);
+			free (out);
+		}
+	} else if (as_r2) {
+		if (!quiet) {
+			printf ("# r2 script generated by r2unity -c\n");
+			printf ("# Input file: %s\n", metadata_path && *metadata_path? metadata_path: "-");
+			if (!has_ptrs) {
+				printf ("# Method ic+ entries need native addresses; pass -f with an executable to recover them.\n");
+			}
+		}
+		for (size_t i = 0; i < max; i++) {
+			emit_class_r2 (meta, types, type_count, methods, method_count, fields, field_count, method_ptrs, has_ptrs, i, quiet);
+		}
+	} else {
+		if (!quiet) {
+			printf ("# classes from %s\n", metadata_path && *metadata_path? metadata_path: "-");
+			printf ("# wire_version=%d (%s) types=%zu methods=%zu fields=%zu\n",
+				meta->version,
+				r2unity_unity_range_from_wire (meta->version),
+				type_count,
+				method_count,
+				field_count);
+		}
+		for (size_t i = 0; i < max; i++) {
+			emit_class_text (meta, types, type_count, methods, method_count, fields, field_count, interfaces, interface_count, i);
+		}
+	}
+
+	R_FREE (method_ptrs);
+	R_FREE (interfaces);
+	R_FREE (fields);
+	R_FREE (methods);
+	R_FREE (types);
+	return 0;
+}
+
 int main(int argc, char *argv[]) {
 	bool json_one_line = false;
 	bool r2_script = false;
@@ -493,16 +908,17 @@ int main(int argc, char *argv[]) {
 	bool debug = false;
 	long limit = -1;
 	ut64 gmp_addr = 0;
-	size_t gmp_count = 0;
 	bool fast = false;
 	bool sbom = false;
 	bool pinvokes = false;
 	bool reverse_pinvokes = false;
 	bool string_literals = false;
 	bool detect_paths = false;
+	bool classes = false;
 	int opt;
-	while ((opt = getopt (argc, argv, "hjrqfVvSPRDzl:a:c:")) != -1) {
+	while ((opt = getopt (argc, argv, "chjrqfVvSPRDzl:a:")) != -1) {
 		switch (opt) {
+		case 'c': classes = true; break;
 		case 'j': json_one_line = true; break;
 		case 'r': r2_script = true; break;
 		case 'q': quiet = true; break;
@@ -518,7 +934,6 @@ int main(int argc, char *argv[]) {
 		case 'z': string_literals = true; break;
 		case 'l': limit = strtol (optarg, NULL, 0); break;
 		case 'a': gmp_addr = (ut64)strtoull (optarg, NULL, 0); break;
-		case 'c': gmp_count = (size_t)strtoull (optarg, NULL, 0); break;
 		case 'h':
 			print_usage (stdout, argv[0]);
 			return 0;
@@ -538,9 +953,22 @@ int main(int argc, char *argv[]) {
 		}
 		return emit_detected_paths (argv[optind], json_one_line);
 	}
-	if (string_literals) {
+	if (classes) {
+		if (sbom || pinvokes || reverse_pinvokes || string_literals) {
+			R_LOG_ERROR ("-c cannot be combined with -S, -P, -R or -z");
+			return 1;
+		}
+		if (argc - optind != 1 && argc - optind != 2) {
+			print_usage (stderr, argv[0]);
+			return 1;
+		}
+		if (fast && argc - optind != 2) {
+			R_LOG_ERROR ("-c -f requires both executable and metadata paths");
+			return 1;
+		}
+	} else if (string_literals) {
 		if (json_one_line || fast || gmp_addr || sbom || pinvokes || reverse_pinvokes) {
-			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a/-c, -S, -P or -R");
+			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a, -S, -P or -R");
 			return 1;
 		}
 		if (argc - optind != 1 && argc - optind != 2) {
@@ -554,7 +982,7 @@ int main(int argc, char *argv[]) {
 
 	const char *exe_path = NULL;
 	const char *metadata_path = NULL;
-	if (string_literals && argc - optind == 1) {
+	if ((string_literals || classes) && argc - optind == 1) {
 		exe_path = "";
 		metadata_path = argv[optind];
 	} else {
@@ -607,6 +1035,13 @@ int main(int argc, char *argv[]) {
 		return rc;
 	}
 
+	if (classes) {
+		int rc = emit_classes (meta, exe_path, metadata_path, json_one_line, r2_script, fast, quiet, limit);
+		r2unity_free_metadata (meta);
+		r_unref (buf);
+		return rc;
+	}
+
 	if (string_literals) {
 		int rc = emit_string_literals (meta, metadata_path, quiet, limit);
 		r2unity_free_metadata (meta);
@@ -623,8 +1058,7 @@ int main(int argc, char *argv[]) {
 	ut64 *method_ptrs = NULL;
 	bool has_ptrs = false;
 	if (gmp_addr) {
-		R_LOG_WARN ("Manual method-pointer table reading (-a/-c) is not implemented");
-		(void)gmp_count;
+		R_LOG_WARN ("Manual method-pointer table reading (-a) is not implemented");
 	} else if (fast) {
 		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
 	}

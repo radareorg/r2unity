@@ -121,6 +121,12 @@ typedef struct {
 
 typedef struct {
 	uint32_t nameIndex;
+	int32_t typeIndex;
+	uint32_t token;
+} Il2CppFieldDefinition;
+
+typedef struct {
+	uint32_t nameIndex;
 	int32_t assemblyIndex;
 	int32_t typeStart;
 	uint32_t typeCount;
@@ -203,6 +209,8 @@ R_API Il2CppStringLiteral *r2unity_get_string_literals(R2UnityMetadata *meta, si
 R_API bool r2unity_read_string_literal(R2UnityMetadata *meta, const Il2CppStringLiteral *lit, ut8 **out_bytes, size_t *out_len);
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions(R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *meta, size_t *count);
+R_API Il2CppFieldDefinition *r2unity_get_field_definitions(R2UnityMetadata *meta, size_t *count);
+R_API int32_t *r2unity_get_type_index_table(R2UnityMetadata *meta, R2UMetadataSectionId id, size_t *count);
 R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count);
 R_API int *r2unity_build_type_image_map(const Il2CppImageDefinition *images, size_t image_count, size_t type_count);
 R_API int r2unity_image_index_for_method(const int *type2img, size_t type_count, const Il2CppMethodDefinition *m);

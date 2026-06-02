@@ -796,6 +796,51 @@ R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *me
 	return methods;
 }
 
+R_API Il2CppFieldDefinition *r2unity_get_field_definitions(R2UnityMetadata *meta, size_t *count) {
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
+	const bool compact_indices = (meta->version >= 35);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const ut64 entry = field_definition_entry_size (meta);
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_FIELDS, entry, count);
+	if (!buf) {
+		return NULL;
+	}
+	Il2CppFieldDefinition *fields = R_NEWS (Il2CppFieldDefinition, *count);
+	if (!fields) {
+		R_FREE (buf);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * entry;
+		fields[i].nameIndex = read_u32p (&p);
+		fields[i].typeIndex = read_indexp (&p, type_index_size);
+		fields[i].token = read_u32p (&p);
+	}
+	R_FREE (buf);
+	return fields;
+}
+
+R_API int32_t *r2unity_get_type_index_table(R2UnityMetadata *meta, R2UMetadataSectionId id, size_t *count) {
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
+	const bool compact_indices = (meta->version >= 35);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	ut8 *buf = read_metadata_table (meta, id, type_index_size, count);
+	if (!buf) {
+		return NULL;
+	}
+	int32_t *out = R_NEWS (int32_t, *count);
+	if (!out) {
+		R_FREE (buf);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * type_index_size;
+		out[i] = read_indexp (&p, type_index_size);
+	}
+	R_FREE (buf);
+	return out;
+}
+
 R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count) {
 	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
 	*count = 0;
