@@ -9,6 +9,20 @@
 #include <r2unity_config.h>
 #include "lib/lib.h"
 
+typedef struct {
+	R2UnitySymbolOverride *items;
+	size_t count;
+} CliSymbolOverrides;
+
+typedef struct {
+	bool as_json;
+	bool as_r2;
+	bool fast;
+	bool quiet;
+	long limit;
+	const R2UnityNativeOptions *native;
+} CliEmitOptions;
+
 /* System.Reflection.MethodAttributes subset. Returns an owned string
  *(possibly empty) describing the visibility/flags for a managed method. */
 static char *method_attrs(unsigned flags) {
@@ -62,10 +76,12 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"  -a 0xADDR     Read the method pointer table starting at virtual address 0xADDR\n"
 		"  -c            Enumerate classes, inheritance, methods, and fields\n"
 		"  -D            Detect companion files from the given executable path and exit\n"
-		"  -f            Fast path: auto-detect ELF/Mach-O/PE and scan method pointers\n"
+		"  -f            Recover native method pointers through symbols/sections\n"
+		"  -H            Force section-scan fallback instead of CodeRegistration\n"
 		"  -h            Show this help and exit\n"
 		"  -j            One-line JSON status, or JSON output with -c/-P/-R/-S\n"
 		"  -l N          Limit emitted entries to N\n"
+		"  -O N=A        Override a native symbol address, e.g. g_CodeRegistration=0x1234\n"
 		"  -P            Enumerate P/Invoke (managed -> native) methods\n"
 		"  -q            Quiet mode: omit banner and informational comments\n"
 		"  -r            Emit r2 script commands; pairs with -c/-P/-R\n"
@@ -92,6 +108,57 @@ static void print_usage(FILE *out, const char *prog_name) {
 		"  Linux standalone:   GameAssembly.so     + global-metadata.dat\n"
 		"                      metadata: *_Data/il2cpp_data/Metadata/global-metadata.dat\n",
 		prog_name);
+}
+
+static bool add_symbol_override(CliSymbolOverrides *overrides, const char *arg) {
+	if (!overrides || !arg) {
+		return false;
+	}
+	const char *eq = strchr (arg, '=');
+	if (!eq || eq == arg || !eq[1]) {
+		return false;
+	}
+	R2UnitySymbolOverride *items = realloc (overrides->items, (overrides->count + 1) * sizeof (*items));
+	if (!items) {
+		return false;
+	}
+	overrides->items = items;
+	char *name = r_str_ndup (arg, (int)(eq - arg));
+	if (!name) {
+		return false;
+	}
+	overrides->items[overrides->count].name = name;
+	overrides->items[overrides->count].va = (ut64)strtoull (eq + 1, NULL, 0);
+	overrides->count++;
+	return true;
+}
+
+static void free_symbol_overrides(CliSymbolOverrides *overrides) {
+	if (!overrides) {
+		return;
+	}
+	for (size_t i = 0; i < overrides->count; i++) {
+		free ((char *)overrides->items[i].name);
+	}
+	R_FREE (overrides->items);
+	overrides->count = 0;
+}
+
+static void pj_native_result(PJ *pj, const R2UnityNativeResult *native) {
+	pj_ks (pj, "native_source", native? r2unity_native_source_name (native->source): "none");
+	pj_kn (pj, "code_registration", native? native->code_registration_va: 0);
+	pj_kn (pj, "metadata_registration", native? native->metadata_registration_va: 0);
+	pj_kn (pj, "method_pointers", native? native->method_pointers_va: 0);
+	pj_kn (pj, "code_gen_modules", native? native->code_gen_modules_va: 0);
+}
+
+static void print_native_comment(const R2UnityNativeResult *native) {
+	printf ("# native_source=%s code_registration=0x%" PFMT64x " metadata_registration=0x%" PFMT64x " method_pointers=0x%" PFMT64x " code_gen_modules=0x%" PFMT64x "\n",
+		native? r2unity_native_source_name (native->source): "none",
+		native? native->code_registration_va: 0,
+		native? native->metadata_registration_va: 0,
+		native? native->method_pointers_va: 0,
+		native? native->code_gen_modules_va: 0);
 }
 
 static void json_escape(FILE *f, const char *s) {
@@ -407,31 +474,6 @@ static int emit_detected_paths(const char *input, bool as_json) {
 	}
 	r2unity_free_paths (p);
 	return 0;
-}
-
-/* Sniff the exe magic and dispatch to the matching fast finder. */
-static bool find_method_pointers_fast(R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
-	ut8 magic[4] = { 0 };
-	FILE *fp = fopen (path, "rb");
-	if (fp) {
-		if (fread (magic, 1, sizeof (magic), fp) != sizeof (magic)) {
-			memset (magic, 0, sizeof (magic));
-		}
-		fclose (fp);
-	}
-	if (!memcmp (magic, "\x7f"
-		"ELF",
-		4)) {
-		return r2unity_find_method_pointers_elf (meta, path, out_ptrs);
-	}
-	ut32 m = r_read_le32 (magic);
-	if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
-		return r2unity_find_method_pointers_macho (meta, path, out_ptrs);
-	}
-	if (magic[0] == 'M' && magic[1] == 'Z') {
-		return r2unity_find_method_pointers_pe (meta, path, out_ptrs);
-	}
-	return false;
 }
 
 /* Emit one method as r2 script commands. Methods without a plausible native
@@ -795,12 +837,12 @@ static void emit_class_r2(R2UnityMetadata *meta,
 	free (name);
 }
 
-static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path, bool as_json, bool as_r2, bool fast, bool quiet, long limit) {
-	if (as_json && as_r2) {
+static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path, const CliEmitOptions *opts) {
+	if (opts->as_json && opts->as_r2) {
 		R_LOG_ERROR ("-j and -r are mutually exclusive with -c");
 		return 1;
 	}
-	if (fast && (!exe_path || !*exe_path)) {
+	if (opts->fast && (!exe_path || !*exe_path)) {
 		R_LOG_ERROR ("-c -f requires both executable and metadata paths");
 		return 1;
 	}
@@ -818,26 +860,20 @@ static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char 
 	size_t interface_count = 0;
 	int32_t *interfaces = r2unity_get_type_index_table (meta, R2U_SEC_INTERFACES, &interface_count);
 
+	R2UnityNativeResult native_result = { 0 };
 	ut64 *method_ptrs = NULL;
 	bool has_ptrs = false;
-	if (fast) {
-		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
-	}
-	if (method_ptrs && !has_ptrs) {
-		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k]) {
-				has_ptrs = true;
-				break;
-			}
-		}
+	if (opts->fast) {
+		has_ptrs = r2unity_find_method_pointers (meta, exe_path, opts->native, &native_result);
+		method_ptrs = native_result.method_ptrs;
 	}
 
 	size_t max = type_count;
-	if (limit >= 0 && (size_t)limit < max) {
-		max = (size_t)limit;
+	if (opts->limit >= 0 && (size_t)opts->limit < max) {
+		max = (size_t)opts->limit;
 	}
 
-	if (as_json) {
+	if (opts->as_json) {
 		PJ *pj = pj_new ();
 		if (!pj) {
 			R_LOG_ERROR ("unable to allocate JSON builder");
@@ -853,6 +889,7 @@ static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char 
 		pj_ki (pj, "version", meta->version);
 		pj_ks (pj, "unity_range", r2unity_unity_range_from_wire (meta->version));
 		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_native_result (pj, &native_result);
 		pj_kn (pj, "types", (ut64)type_count);
 		pj_kn (pj, "methods", (ut64)method_count);
 		pj_kn (pj, "fields", (ut64)field_count);
@@ -867,19 +904,20 @@ static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char 
 			puts (out);
 			free (out);
 		}
-	} else if (as_r2) {
-		if (!quiet) {
+	} else if (opts->as_r2) {
+		if (!opts->quiet) {
 			printf ("# r2 script generated by r2unity -c\n");
 			printf ("# Input file: %s\n", metadata_path && *metadata_path? metadata_path: "-");
+			print_native_comment (&native_result);
 			if (!has_ptrs) {
 				printf ("# Method ic+ entries need native addresses; pass -f with an executable to recover them.\n");
 			}
 		}
 		for (size_t i = 0; i < max; i++) {
-			emit_class_r2 (meta, types, type_count, methods, method_count, fields, field_count, method_ptrs, has_ptrs, i, quiet);
+			emit_class_r2 (meta, types, type_count, methods, method_count, fields, field_count, method_ptrs, has_ptrs, i, opts->quiet);
 		}
 	} else {
-		if (!quiet) {
+		if (!opts->quiet) {
 			printf ("# classes from %s\n", metadata_path && *metadata_path? metadata_path: "-");
 			printf ("# wire_version=%d (%s) types=%zu methods=%zu fields=%zu\n",
 				meta->version,
@@ -893,7 +931,7 @@ static int emit_classes(R2UnityMetadata *meta, const char *exe_path, const char 
 		}
 	}
 
-	R_FREE (method_ptrs);
+	r2unity_native_result_fini (&native_result);
 	R_FREE (interfaces);
 	R_FREE (fields);
 	R_FREE (methods);
@@ -915,84 +953,116 @@ int main(int argc, char *argv[]) {
 	bool string_literals = false;
 	bool detect_paths = false;
 	bool classes = false;
+	R2UnityNativeOptions native_options = { 0 };
+	CliSymbolOverrides symbol_overrides = { 0 };
 	int opt;
-	while ((opt = getopt (argc, argv, "chjrqfVvSPRDzl:a:")) != -1) {
+	RGetopt go;
+	r_getopt_init (&go, argc, (const char **)argv, "chjrqfHVvSPRDzl:a:O:");
+	while ((opt = r_getopt_next (&go)) != -1) {
 		switch (opt) {
 		case 'c': classes = true; break;
 		case 'j': json_one_line = true; break;
 		case 'r': r2_script = true; break;
 		case 'q': quiet = true; break;
 		case 'f': fast = true; break;
+		case 'H':
+			fast = true;
+			native_options.force_heuristic = true;
+			break;
 		case 'V': debug = true; break;
 		case 'v':
 			printf ("r2unity %s\n", R2UNITY_VERSION);
+			free_symbol_overrides (&symbol_overrides);
 			return 0;
 		case 'S': sbom = true; break;
 		case 'P': pinvokes = true; break;
 		case 'R': reverse_pinvokes = true; break;
 		case 'D': detect_paths = true; break;
 		case 'z': string_literals = true; break;
-		case 'l': limit = strtol (optarg, NULL, 0); break;
-		case 'a': gmp_addr = (ut64)strtoull (optarg, NULL, 0); break;
+		case 'l': limit = strtol (go.arg, NULL, 0); break;
+		case 'a': gmp_addr = (ut64)strtoull (go.arg, NULL, 0); break;
+		case 'O':
+			if (!add_symbol_override (&symbol_overrides, go.arg)) {
+				R_LOG_ERROR ("invalid -O argument; expected name=addr");
+				free_symbol_overrides (&symbol_overrides);
+				return 1;
+			}
+			fast = true;
+			break;
 		case 'h':
 			print_usage (stdout, argv[0]);
+			free_symbol_overrides (&symbol_overrides);
 			return 0;
 		default:
 			print_usage (stderr, argv[0]);
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
 	}
+	native_options.symbols = symbol_overrides.items;
+	native_options.symbols_count = symbol_overrides.count;
 	if (pinvokes && reverse_pinvokes) {
 		R_LOG_ERROR ("-P and -R are mutually exclusive");
+		free_symbol_overrides (&symbol_overrides);
 		return 1;
 	}
 	if (detect_paths) {
-		if (argc - optind != 1) {
+		if (argc - go.ind != 1) {
 			print_usage (stderr, argv[0]);
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
-		return emit_detected_paths (argv[optind], json_one_line);
+		int rc = emit_detected_paths (argv[go.ind], json_one_line);
+		free_symbol_overrides (&symbol_overrides);
+		return rc;
 	}
 	if (classes) {
 		if (sbom || pinvokes || reverse_pinvokes || string_literals) {
 			R_LOG_ERROR ("-c cannot be combined with -S, -P, -R or -z");
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
-		if (argc - optind != 1 && argc - optind != 2) {
+		if (argc - go.ind != 1 && argc - go.ind != 2) {
 			print_usage (stderr, argv[0]);
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
-		if (fast && argc - optind != 2) {
+		if (fast && argc - go.ind != 2) {
 			R_LOG_ERROR ("-c -f requires both executable and metadata paths");
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
 	} else if (string_literals) {
 		if (json_one_line || fast || gmp_addr || sbom || pinvokes || reverse_pinvokes) {
 			R_LOG_ERROR ("-z cannot be combined with -j, -f, -a, -S, -P or -R");
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
-		if (argc - optind != 1 && argc - optind != 2) {
+		if (argc - go.ind != 1 && argc - go.ind != 2) {
 			print_usage (stderr, argv[0]);
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
-	} else if (argc - optind != 2) {
+	} else if (argc - go.ind != 2) {
 		print_usage (stderr, argv[0]);
+		free_symbol_overrides (&symbol_overrides);
 		return 1;
 	}
 
 	const char *exe_path = NULL;
 	const char *metadata_path = NULL;
-	if ((string_literals || classes) && argc - optind == 1) {
+	if ((string_literals || classes) && argc - go.ind == 1) {
 		exe_path = "";
-		metadata_path = argv[optind];
+		metadata_path = argv[go.ind];
 	} else {
-		exe_path = argv[optind];
-		metadata_path = argv[optind + 1];
+		exe_path = argv[go.ind];
+		metadata_path = argv[go.ind + 1];
 	}
 
 	RBuffer *buf = r_buf_new_file (metadata_path, O_RDONLY, 0);
 	if (!buf) {
 		perror ("Error opening file");
+		free_symbol_overrides (&symbol_overrides);
 		return 1;
 	}
 
@@ -1003,6 +1073,7 @@ int main(int argc, char *argv[]) {
 	if (!meta) {
 		R_LOG_ERROR ("Failed to parse metadata");
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return 1;
 	}
 
@@ -1017,6 +1088,7 @@ int main(int argc, char *argv[]) {
 		}
 		r2unity_free_metadata (meta);
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return rc;
 	}
 
@@ -1025,6 +1097,7 @@ int main(int argc, char *argv[]) {
 			R_LOG_ERROR ("-j and -r are mutually exclusive");
 			r2unity_free_metadata (meta);
 			r_unref (buf);
+			free_symbol_overrides (&symbol_overrides);
 			return 1;
 		}
 		int rc = reverse_pinvokes
@@ -1032,13 +1105,23 @@ int main(int argc, char *argv[]) {
 			: emit_pinvokes (meta, exe_path, json_one_line, r2_script, quiet);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return rc;
 	}
 
 	if (classes) {
-		int rc = emit_classes (meta, exe_path, metadata_path, json_one_line, r2_script, fast, quiet, limit);
+		CliEmitOptions emit_opts = {
+			.as_json = json_one_line,
+			.as_r2 = r2_script,
+			.fast = fast,
+			.quiet = quiet,
+			.limit = limit,
+			.native = &native_options
+		};
+		int rc = emit_classes (meta, exe_path, metadata_path, &emit_opts);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return rc;
 	}
 
@@ -1046,6 +1129,7 @@ int main(int argc, char *argv[]) {
 		int rc = emit_string_literals (meta, metadata_path, quiet, limit);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return rc;
 	}
 
@@ -1055,42 +1139,45 @@ int main(int argc, char *argv[]) {
 	size_t method_count = 0;
 	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
 
+	R2UnityNativeResult native_result = { 0 };
 	ut64 *method_ptrs = NULL;
 	bool has_ptrs = false;
 	if (gmp_addr) {
 		R_LOG_WARN ("Manual method-pointer table reading (-a) is not implemented");
 	} else if (fast) {
-		has_ptrs = find_method_pointers_fast (meta, exe_path, &method_ptrs);
-	}
-	/* Fast-path may prealloc an all-zero table; upgrade has_ptrs only if any
-	 * non-zero entry survived. */
-	if (method_ptrs && !has_ptrs) {
-		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k]) {
-				has_ptrs = true;
-				break;
-			}
-		}
+		has_ptrs = r2unity_find_method_pointers (meta, exe_path, &native_options, &native_result);
+		method_ptrs = native_result.method_ptrs;
 	}
 
 	if (json_one_line) {
-		// Output a single stable JSON line
-		printf ("{\"ok\":true,\"version\":%d,\"types\":%u,\"methods\":%u,\"has_ptrs\":%s}\n",
-			meta->version,
-			(unsigned)type_count,
-			(unsigned)method_count,
-			has_ptrs? "true": "false");
-		R_FREE (method_ptrs);
+		PJ *pj = pj_new ();
+		pj_o (pj);
+		pj_kb (pj, "ok", true);
+		pj_ki (pj, "version", meta->version);
+		pj_kn (pj, "types", (ut64)type_count);
+		pj_kn (pj, "methods", (ut64)method_count);
+		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_native_result (pj, &native_result);
+		pj_end (pj);
+		char *out = pj_drain (pj);
+		if (out) {
+			puts (out);
+			free (out);
+		}
+		r2unity_native_result_fini (&native_result);
 		R_FREE (methods);
 		R_FREE (types);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
+		free_symbol_overrides (&symbol_overrides);
 		return 0;
 	}
 
 	if (!quiet) {
 		printf ("# r2 script generated by r2unity\n");
-		printf ("# Input file: %s\n\n", metadata_path);
+		printf ("# Input file: %s\n", metadata_path);
+		print_native_comment (&native_result);
+		printf ("\n");
 	}
 
 	size_t img_count = 0;
@@ -1122,7 +1209,7 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
-	R_FREE (method_ptrs);
+	r2unity_native_result_fini (&native_result);
 	R_FREE (methods);
 	R_FREE (types);
 	R_FREE (images);
@@ -1130,6 +1217,7 @@ int main(int argc, char *argv[]) {
 
 	r2unity_free_metadata (meta);
 	r_unref (buf);
+	free_symbol_overrides (&symbol_overrides);
 
 	return 0;
 }

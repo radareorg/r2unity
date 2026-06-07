@@ -3,6 +3,9 @@
 
 #include <r_util.h>
 
+struct r_bin_t;
+struct r_bin_file_t;
+
 #define IL2CPP_MAGIC 0xFAB11BAF
 #define R2UNITY_METADATA_BASE_SECTION_COUNT 31
 #define R2UNITY_METADATA_SECTION_COUNT 33
@@ -199,6 +202,37 @@ typedef enum {
 	R2U_SBOM_JSON
 } R2UnitySbomFormat;
 
+typedef enum {
+	R2U_NATIVE_SOURCE_NONE,
+	R2U_NATIVE_SOURCE_SYMBOL,
+	R2U_NATIVE_SOURCE_OVERRIDE,
+	R2U_NATIVE_SOURCE_HEURISTIC
+} R2UnityNativeSource;
+
+typedef struct {
+	const char *name;
+	ut64 va;
+} R2UnitySymbolOverride;
+
+typedef struct {
+	bool force_heuristic;
+	ut64 code_registration_va;
+	ut64 metadata_registration_va;
+	const R2UnitySymbolOverride *symbols;
+	size_t symbols_count;
+} R2UnityNativeOptions;
+
+typedef struct {
+	ut64 *method_ptrs; /* owned; free with r2unity_native_result_fini() */
+	bool has_method_ptrs;
+	R2UnityNativeSource source;
+	ut64 code_registration_va;
+	ut64 metadata_registration_va;
+	ut64 method_pointers_va;
+	ut64 code_gen_modules_va;
+	int ptr_size;
+} R2UnityNativeResult;
+
 R_API R2UnityMetadata *r2unity_parse_metadata(RBuffer *buf);
 R_API void r2unity_free_metadata(R2UnityMetadata *meta);
 /* Caller owns the returned string and must free() it. NULL on missing/empty. */
@@ -229,9 +263,12 @@ R_API bool r2unity_metadata_section(R2UnityMetadata *meta, R2UMetadataSectionId 
 R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadataSectionId id);
 R_API ut64 r2unity_metadata_section_count(R2UnityMetadata *meta, R2UMetadataSectionId id);
 R_API ut64 r2unity_metadata_header_size(R2UnityMetadata *meta);
-R_API bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char *macho_path, ut64 **out_ptrs);
-R_API bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *elf_path, ut64 **out_ptrs);
-R_API bool r2unity_find_method_pointers_pe(R2UnityMetadata *meta, const char *pe_path, ut64 **out_ptrs);
+R_API const char *r2unity_native_source_name(R2UnityNativeSource source);
+R_API const char *const *r2unity_native_code_registration_names(void);
+R_API const char *const *r2unity_native_metadata_registration_names(void);
+R_API void r2unity_native_result_fini(R2UnityNativeResult *result);
+R_API bool r2unity_find_method_pointers(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
+R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, struct r_bin_t *bin, struct r_bin_file_t *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 
 /* Companion-file discovery.
  *

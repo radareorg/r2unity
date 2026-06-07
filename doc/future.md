@@ -535,22 +535,23 @@ are always zero; a defensive parser bounds-checks and skips.
 
 ## 3. Native binary — pointer arrays we don't follow
 
-`src/lib/elf.c` and `src/lib/macho.c` currently locate exactly one
-array: `CodeRegistration.methodPointers` (or its v24.2+ per-image
-equivalent, if the heuristic happens to land on the right
-`Il2CppCodeGenModule`). The registration structures actually expose
-many more pointer arrays, each with its own metadata table partner.
-Each entry below is a `{ ulong count; ulong ptr; }` pair inside the
-registration (see §3 of `doc/r2unity.md` for the full struct).
+`src/lib/bin/native.c` currently recovers method pointers from
+`Il2CppCodeRegistration` when the registration anchor is available,
+and falls back to a generic section scan backed by r_bin or the simple
+ELF/Mach-O/PE parsers for stripped binaries.
+The registration structures expose many more pointer arrays, each
+with its own metadata table partner. Each entry below is a
+`{ ulong count; ulong ptr; }` pair inside the registration (see §3 of
+`doc/r2unity.md` for the full struct).
 
 ### 3.1 `methodPointers` (≥v24.1 global; v≥24.2 per-module)
 
 What r2unity extracts today. From v24.2 onwards this field is on
 `Il2CppCodeGenModule`, **not** `CodeRegistration`, and there is one
-module per image. If r2unity finds a single `{count, ptr}` on a
-v24.2+ binary it is only extracting **one image's** methods.
-Walking `codeGenModules[]` and enumerating each module is mandatory
-for full coverage.
+module per image. The structural path walks `codeGenModules[]` and
+maps modules back to `.dat` image rows; the fallback section scan may
+still find only one image's table because it does not know the
+registration structure.
 
 ### 3.2 `invokerPointers`
 

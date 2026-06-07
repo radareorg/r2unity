@@ -18,6 +18,7 @@ add_project_arguments(
 )
 
 r_util_dep = dependency('r_util')
+r_bin_dep = dependency('r_bin')
 
 conf = configuration_data()
 conf.set_quoted('R2UNITY_VERSION', meson.project_version())
@@ -25,11 +26,12 @@ configure_file(output: 'r2unity_config.h', configuration: conf)
 
 lib_inc = include_directories('src/lib')
 lib_sources = files(
-  'src/lib/elf.c',
   'src/lib/lib.c',
-  'src/lib/macho.c',
+  'src/lib/bin/elf.c',
+  'src/lib/bin/macho.c',
+  'src/lib/bin/native.c',
+  'src/lib/bin/pe.c',
   'src/lib/paths.c',
-  'src/lib/pe.c',
   'src/lib/sbom.c',
 )
 
@@ -37,7 +39,7 @@ r2unity = executable(
   'r2unity',
   files('src/main.c') + lib_sources,
   include_directories: lib_inc,
-  dependencies: r_util_dep,
+  dependencies: [r_util_dep, r_bin_dep],
   install: true,
 )
 
@@ -46,7 +48,6 @@ test('r2unity-version', r2unity, args: ['-v'])
 
 plugins_opt = get_option('plugins')
 r_core_dep = dependency('r_core', required: plugins_opt)
-r_bin_dep = dependency('r_bin', required: plugins_opt)
 build_plugins = plugins_opt.enabled() or (
   plugins_opt.auto() and r_core_dep.found() and r_bin_dep.found()
 )
@@ -72,7 +73,7 @@ if build_plugins
     'core_r2unity',
     files('src/r2/core_r2unity.c') + lib_sources,
     include_directories: lib_inc,
-    dependencies: r_core_dep,
+    dependencies: [r_core_dep, r_bin_dep],
     name_prefix: '',
     install: true,
     install_dir: r2_plugindir,
@@ -82,7 +83,7 @@ if build_plugins
     'bin_r2unity',
     files('src/r2/bin_r2unity.c') + lib_sources,
     include_directories: lib_inc,
-    dependencies: r_bin_dep,
+    dependencies: [r_bin_dep],
     name_prefix: '',
     install: true,
     install_dir: r2_plugindir,

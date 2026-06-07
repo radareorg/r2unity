@@ -17,12 +17,12 @@ BIN_PLUGIN = src/r2/bin_r2unity.$(SOEXT)
 PLUGINS = $(CORE_PLUGIN) $(BIN_PLUGIN)
 CC = gcc
 
-CFLAGS = -Wall -Wextra -g -I. $(shell pkg-config --cflags r_util 2>/dev/null || echo "")
-LDFLAGS = $(shell pkg-config --libs r_util 2>/dev/null || echo "")
+CFLAGS = -Wall -Wextra -g -I. $(shell pkg-config --cflags r_util r_bin 2>/dev/null || echo "")
+LDFLAGS = $(shell pkg-config --libs r_util r_bin 2>/dev/null || echo "")
 
 # r_core plugin flags (full radare2)
-CORE_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_core 2>/dev/null || echo "")
-CORE_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_core 2>/dev/null || echo "")
+CORE_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_core r_bin 2>/dev/null || echo "")
+CORE_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_core r_bin 2>/dev/null || echo "")
 
 # r_bin plugin flags
 BIN_PLUGIN_CFLAGS = -Wall -Wextra -g -fPIC $(shell pkg-config --cflags r_bin 2>/dev/null || echo "")
@@ -30,8 +30,9 @@ BIN_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_bin 2>/dev/null || echo "")
 
 R2_USER_PLUGINS = $(shell r2 -H R2_USER_PLUGINS 2>/dev/null)
 
-LIB_SRCS = $(wildcard src/lib/*.c)
+LIB_SRCS = $(wildcard src/lib/*.c) $(wildcard src/lib/bin/*.c)
 LIB_OBJS = $(LIB_SRCS:.c=.o)
+LEGACY_OBJS = src/lib/elf.o src/lib/macho.o src/lib/pe.o src/lib/native.o
 CLI_SRCS = src/main.c
 CLI_OBJS = $(CLI_SRCS:.c=.o)
 OBJS = $(CLI_OBJS) $(LIB_OBJS)
@@ -81,7 +82,7 @@ $(BIN_PLUGIN): src/r2/bin_r2unity.c $(LIB_SRCS)
 	$(CC) $(CFLAGS) -c -o $@ $<
 
 clean:
-	rm -f $(EXEC) $(OBJS) $(PLUGINS) $(CONFIG_H)
+	rm -f $(EXEC) $(OBJS) $(LEGACY_OBJS) $(PLUGINS) $(CONFIG_H)
 
 
 .PHONY: all clean plugin install-plugin uninstall-plugin fmt
