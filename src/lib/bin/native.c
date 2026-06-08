@@ -847,6 +847,12 @@ R_API bool r2unity_find_method_pointers(R2UnityMetadata *meta, const char *path,
 	if (ok) {
 		return true;
 	}
+	return r2unity_find_method_pointers_simple (meta, path, options, result);
+}
+
+R_API bool r2unity_find_method_pointers_simple(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result) {
+	R_RETURN_VAL_IF_FAIL (meta && path && result, false);
+	memset (result, 0, sizeof (*result));
 	if (path && *path) {
 		ut8 magic[4] = { 0 };
 		FILE *fp = fopen (path, "rb");

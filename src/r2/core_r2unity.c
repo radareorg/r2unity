@@ -393,7 +393,7 @@ static bool find_method_pointers(RCore *core, R2UnityMetadata *meta, const char 
 		ok = r2unity_find_method_pointers_rbin (meta, core->bin, r_bin_cur (core->bin), &opts, result);
 	}
 	if (!ok && path && *path) {
-		ok = r2unity_find_method_pointers (meta, path, &opts, result);
+		ok = r2unity_find_method_pointers_simple (meta, path, &opts, result);
 	}
 	native_result_to_config (core, result);
 	return ok;

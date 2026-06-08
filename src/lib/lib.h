@@ -268,6 +268,7 @@ R_API const char *const *r2unity_native_code_registration_names(void);
 R_API const char *const *r2unity_native_metadata_registration_names(void);
 R_API void r2unity_native_result_fini(R2UnityNativeResult *result);
 R_API bool r2unity_find_method_pointers(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
+R_API bool r2unity_find_method_pointers_simple(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, struct r_bin_t *bin, struct r_bin_file_t *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 
 /* Companion-file discovery.
