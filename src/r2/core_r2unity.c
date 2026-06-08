@@ -21,6 +21,9 @@ static const char *g_help_msg[] = {
 	"r2unity-S", "[j]", "emit managed-assembly SBOM (text or JSON)", "Variables:", "", "",
 	"r2unity.metadata", "", "path to global-metadata.dat",
 	"r2unity.library", "", "path to IL2CPP native library",
+	"r2unity.code_registration", "", "Il2CppCodeRegistration VA override/resolved VA",
+	"r2unity.metadata_registration", "", "Il2CppMetadataRegistration VA override/resolved VA",
+	"r2unity.force_heuristic", "", "force section-scan fallback",
 	NULL
 };
 // clang-format on
@@ -75,16 +78,108 @@ static const char *current_binary_path(RCore *core) {
 	return NULL;
 }
 
-static const char *cfg_get_nonempty(RConfig *cfg, const char *key) {
-	const char *v = r_config_get (cfg, key);
-	return (v && *v)? v: NULL;
+static ut64 flag_addr_prefixed(RCore *core, const char *prefix, const char *name) {
+	char buf[256];
+	int n = snprintf (buf, sizeof (buf), "%s%s", prefix, name);
+	if (n > 0 && n < (int)sizeof (buf)) {
+		RFlagItem *fi = r_flag_get (core->flags, buf);
+		if (fi && fi->addr) {
+			return fi->addr;
+		}
+	}
+	if (*name != '_') {
+		n = snprintf (buf, sizeof (buf), "%s_%s", prefix, name);
+		if (n > 0 && n < (int)sizeof (buf)) {
+			RFlagItem *fi = r_flag_get (core->flags, buf);
+			return fi? fi->addr: 0;
+		}
+	}
+	return 0;
+}
+
+static ut64 flag_addr_native_alias(RCore *core, const char *const *names) {
+	static const char *const prefixes[] = {
+		"",
+		"sym.",
+		"obj.",
+		NULL
+	};
+	if (!core || !core->flags || !names) {
+		return 0;
+	}
+	for (size_t i = 0; names[i]; i++) {
+		for (size_t j = 0; prefixes[j]; j++) {
+			ut64 addr = flag_addr_prefixed (core, prefixes[j], names[i]);
+			if (addr) {
+				return addr;
+			}
+		}
+	}
+	return 0;
+}
+
+static bool current_binary_matches_path(RCore *core, const char *path) {
+	if (!path || !*path) {
+		return true;
+	}
+	const char *cur = current_binary_path (core);
+	if (!cur || !*cur) {
+		return false;
+	}
+	if (!strcmp (cur, path)) {
+		return true;
+	}
+	return !strcmp (r_file_basename (cur), r_file_basename (path));
+}
+
+static void native_options_from_core(RCore *core, R2UnityNativeOptions *opts) {
+	memset (opts, 0, sizeof (*opts));
+	opts->force_heuristic = r_config_get_b (core->config, "r2unity.force_heuristic");
+	opts->code_registration_va = r_config_get_i (core->config, "r2unity.code_registration");
+	opts->metadata_registration_va = r_config_get_i (core->config, "r2unity.metadata_registration");
+	if (!opts->code_registration_va) {
+		opts->code_registration_va = flag_addr_native_alias (core, r2unity_native_code_registration_names ());
+	}
+	if (!opts->metadata_registration_va) {
+		opts->metadata_registration_va = flag_addr_native_alias (core, r2unity_native_metadata_registration_names ());
+	}
+}
+
+static void native_result_to_config(RCore *core, const R2UnityNativeResult *result) {
+	if (!core || !result) {
+		return;
+	}
+	if (result->code_registration_va) {
+		r_config_set_i (core->config, "r2unity.code_registration", result->code_registration_va);
+	}
+	if (result->metadata_registration_va) {
+		r_config_set_i (core->config, "r2unity.metadata_registration", result->metadata_registration_va);
+	}
+}
+
+static void pj_native_result(PJ *pj, const R2UnityNativeResult *result) {
+	pj_ks (pj, "native_source", result? r2unity_native_source_name (result->source): "none");
+	pj_kn (pj, "code_registration", result? result->code_registration_va: 0);
+	pj_kn (pj, "metadata_registration", result? result->metadata_registration_va: 0);
+	pj_kn (pj, "method_pointers", result? result->method_pointers_va: 0);
+	pj_kn (pj, "code_gen_modules", result? result->code_gen_modules_va: 0);
+}
+
+static void print_native_result(RCore *core, const R2UnityNativeResult *result) {
+	r_cons_printf (core->cons,
+		"# native_source=%s code_registration=0x%" PFMT64x " metadata_registration=0x%" PFMT64x " method_pointers=0x%" PFMT64x " code_gen_modules=0x%" PFMT64x "\n",
+		result? r2unity_native_source_name (result->source): "none",
+		result? result->code_registration_va: 0,
+		result? result->metadata_registration_va: 0,
+		result? result->method_pointers_va: 0,
+		result? result->code_gen_modules_va: 0);
 }
 
 /* Resolve (and on first use, cache into the eval vars) the metadata path for
  * the current session. Returns a pointer owned by the RConfig, or NULL. */
 static const char *resolve_metadata_path(RCore *core) {
-	const char *v = cfg_get_nonempty (core->config, "r2unity.metadata");
-	if (v) {
+	const char *v = r_config_get (core->config, "r2unity.metadata");
+	if (R_STR_ISNOTEMPTY (v)) {
 		return v;
 	}
 	const char *bin = current_binary_path (core);
@@ -102,12 +197,13 @@ static const char *resolve_metadata_path(RCore *core) {
 		r_config_set (core->config, "r2unity.library", p->il2cpp_binary);
 	}
 	r2unity_free_paths (p);
-	return cfg_get_nonempty (core->config, "r2unity.metadata");
+	v = r_config_get (core->config, "r2unity.metadata");
+	return R_STR_ISNOTEMPTY (v)? v: NULL;
 }
 
 static const char *resolve_library_path(RCore *core) {
-	const char *v = cfg_get_nonempty (core->config, "r2unity.library");
-	if (v) {
+	const char *v = r_config_get (core->config, "r2unity.library");
+	if (R_STR_ISNOTEMPTY (v)) {
 		return v;
 	}
 	const char *bin = current_binary_path (core);
@@ -125,7 +221,8 @@ static const char *resolve_library_path(RCore *core) {
 		r_config_set (core->config, "r2unity.metadata", p->metadata);
 	}
 	r2unity_free_paths (p);
-	return cfg_get_nonempty (core->config, "r2unity.library");
+	v = r_config_get (core->config, "r2unity.library");
+	return R_STR_ISNOTEMPTY (v)? v: NULL;
 }
 
 static R2UnityMetadata *open_metadata(RCore *core, RBuffer **out_buf) {
@@ -158,7 +255,7 @@ static void close_metadata(R2UnityMetadata *meta, RBuffer *buf) {
 	}
 }
 
-static void json_escape_cons(PJ *pj, const char *key, const char *value) {
+static void pj_string_or_null(PJ *pj, const char *key, const char *value) {
 	if (value) {
 		pj_ks (pj, key, value);
 	} else {
@@ -198,11 +295,11 @@ static int cmd_detect(RCore *core, bool as_json) {
 		PJ *pj = pj_new ();
 		pj_o (pj);
 		pj_kb (pj, "ok", true);
-		json_escape_cons (pj, "platform", p->platform);
-		json_escape_cons (pj, "main_executable", p->main_executable);
-		json_escape_cons (pj, "il2cpp_binary", p->il2cpp_binary);
-		json_escape_cons (pj, "metadata", p->metadata);
-		json_escape_cons (pj, "data_dir", p->data_dir);
+		pj_string_or_null (pj, "platform", p->platform);
+		pj_string_or_null (pj, "main_executable", p->main_executable);
+		pj_string_or_null (pj, "il2cpp_binary", p->il2cpp_binary);
+		pj_string_or_null (pj, "metadata", p->metadata);
+		pj_string_or_null (pj, "data_dir", p->data_dir);
 		pj_end (pj);
 		r_cons_println (core->cons, pj_string (pj));
 		pj_free (pj);
@@ -262,27 +359,18 @@ static int cmd_info(RCore *core, bool as_json) {
 	return 0;
 }
 
-/* Sniff the exe magic and dispatch to the matching fast finder. */
-static bool find_method_pointers(R2UnityMetadata *meta, const char *path, ut64 **out_ptrs) {
-	ut8 magic[4] = { 0 };
-	FILE *fp = fopen (path, "rb");
-	if (fp) {
-		(void)fread (magic, 1, 4, fp);
-		fclose (fp);
+static bool find_method_pointers(RCore *core, R2UnityMetadata *meta, const char *path, R2UnityNativeResult *result) {
+	R2UnityNativeOptions opts = { 0 };
+	native_options_from_core (core, &opts);
+	bool ok = false;
+	if (core && core->bin && r_bin_cur (core->bin) && current_binary_matches_path (core, path)) {
+		ok = r2unity_find_method_pointers_rbin (meta, core->bin, r_bin_cur (core->bin), &opts, result);
 	}
-	if (!memcmp (magic, "\x7f"
-		"ELF",
-		4)) {
-		return r2unity_find_method_pointers_elf (meta, path, out_ptrs);
+	if (!ok && path && *path) {
+		ok = r2unity_find_method_pointers_simple (meta, path, &opts, result);
 	}
-	ut32 m = r_read_le32 (magic);
-	if (m == 0xfeedfacf || m == 0xcffaedfe || m == 0xcafebabe || m == 0xbebafeca) {
-		return r2unity_find_method_pointers_macho (meta, path, out_ptrs);
-	}
-	if (magic[0] == 'M' && magic[1] == 'Z') {
-		return r2unity_find_method_pointers_pe (meta, path, out_ptrs);
-	}
-	return false;
+	native_result_to_config (core, result);
+	return ok;
 }
 
 static int type_definition_for_type_index(const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index) {
@@ -325,44 +413,21 @@ static char *method_name_or_fallback(R2UnityMetadata *meta, const Il2CppMethodDe
 	return r_str_newf ("method.%zu", index);
 }
 
-static void sanitize_ic_name(char *s) {
-	if (!s) {
-		return;
+static char *r2_ic_name(const char *prefix, const char *name, size_t index, bool append_index) {
+	char *out = R_STR_ISNOTEMPTY (name)
+		? (append_index? r_str_newf ("%s_%zu", name, index): r_str_newf ("%s", name))
+		: r_str_newf ("%s_%zu", prefix, index);
+	if (out) {
+		r_name_filter (out, -1);
 	}
-	r_name_filter (s, -1);
-	for (char *p = s; *p; p++) {
+	for (char *p = out; p && *p; p++) {
 		if (*p == '.' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
 			*p = '_';
 		}
 	}
-}
-
-static char *r2_class_name(const char *name, size_t index) {
-	char *out = (name && *name)? strdup (name): r_str_newf ("type_%zu", index);
-	sanitize_ic_name (out);
-	if (!out || !*out) {
-		free (out);
-		out = r_str_newf ("type_%zu", index);
-	}
-	return out;
-}
-
-static char *r2_method_name(const char *name, size_t index) {
-	char *out = (name && *name)? r_str_newf ("%s_%zu", name, index): r_str_newf ("method_%zu", index);
-	sanitize_ic_name (out);
-	if (!out || !*out) {
-		free (out);
-		out = r_str_newf ("method_%zu", index);
-	}
-	return out;
-}
-
-static char *r2_field_name(const char *name, size_t index) {
-	char *out = (name && *name)? strdup (name): r_str_newf ("field_%zu", index);
-	sanitize_ic_name (out);
-	if (!out || !*out) {
-		free (out);
-		out = r_str_newf ("field_%zu", index);
+	if (R_STR_ISEMPTY (out)) {
+		R_FREE (out);
+		return r_str_newf ("%s_%zu", prefix, index);
 	}
 	return out;
 }
@@ -371,14 +436,6 @@ static void pj_hex(PJ *pj, const char *key, ut64 value, int width) {
 	char hex[64];
 	snprintf (hex, sizeof (hex), "0x%0*" PFMT64x, width, value);
 	pj_ks (pj, key, hex);
-}
-
-static void pj_string_or_null(PJ *pj, const char *key, const char *value) {
-	if (value) {
-		pj_ks (pj, key, value);
-	} else {
-		pj_knull (pj, key);
-	}
 }
 
 static void emit_class_text(RCore *core,
@@ -553,7 +610,7 @@ static void emit_class_r2(RCore *core,
 	size_t type_index) {
 	const Il2CppTypeDefinition *td = &types[type_index];
 	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
-	char *r2klass = r2_class_name (name, type_index);
+	char *r2klass = r2_ic_name ("type", name, type_index, false);
 	char *base = type_name_from_index (meta, types, type_count, td->parentIndex, false);
 	if (base) {
 		r_cons_printf (core->cons, "# class %s : %s\n", name? name: r2klass, base);
@@ -562,7 +619,7 @@ static void emit_class_r2(RCore *core,
 	}
 	r_cons_printf (core->cons, "ic+%s @ 0\n", r2klass);
 	if (base) {
-		char *r2base = r2_class_name (base, 0);
+		char *r2base = r2_ic_name ("type", base, 0, false);
 		r_cons_printf (core->cons, "ic+%s:%s @ 0\n", r2klass, r2base);
 		free (r2base);
 	}
@@ -571,7 +628,7 @@ static void emit_class_r2(RCore *core,
 		for (size_t k = 0; k < td->interfaces_count && (size_t)(td->interfacesStart + k) < interface_count; k++) {
 			char *iname = type_name_from_index (meta, types, type_count, interfaces[td->interfacesStart + k], false);
 			if (iname) {
-				char *r2iface = r2_class_name (iname, 0);
+				char *r2iface = r2_ic_name ("type", iname, 0, false);
 				r_cons_printf (core->cons, "ic+%s:%s @ 0\n", r2klass, r2iface);
 				free (r2iface);
 			}
@@ -585,7 +642,7 @@ static void emit_class_r2(RCore *core,
 		ut64 addr = (has_ptrs && method_ptrs)? method_ptrs[mi]: 0;
 		addr = addr > 0x1000? addr: 0;
 		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
-		char *r2meth = r2_method_name (mname, mi);
+		char *r2meth = r2_ic_name ("method", mname, mi, true);
 		r_cons_printf (core->cons, "ic+%s.%s @ 0x%" PFMT64x "\n", r2klass, r2meth, addr);
 		free (r2meth);
 		free (mname);
@@ -595,7 +652,7 @@ static void emit_class_r2(RCore *core,
 	for (int k = 0; fields && k < td->field_count && fstart >= 0 && (size_t)(fstart + k) < field_count; k++) {
 		size_t fi = (size_t)(fstart + k);
 		char *fname = field_name_or_fallback (meta, &fields[fi], fi);
-		char *r2field = r2_field_name (fname, fi);
+		char *r2field = r2_ic_name ("field", fname, fi, false);
 		char *ftype = type_name_from_index (meta, types, type_count, fields[fi].typeIndex, true);
 		r_cons_printf (core->cons, "ic+%s..%s %s @ 0\n",
 			r2klass,
@@ -630,19 +687,13 @@ static int cmd_classes(RCore *core, char mode) {
 	size_t interface_count = 0;
 	int32_t *interfaces = r2unity_get_type_index_table (meta, R2U_SEC_INTERFACES, &interface_count);
 
+	R2UnityNativeResult native_result = { 0 };
 	ut64 *method_ptrs = NULL;
 	bool has_ptrs = false;
 	const char *lib = resolve_library_path (core);
 	if (lib && *lib) {
-		has_ptrs = find_method_pointers (meta, lib, &method_ptrs);
-	}
-	if (method_ptrs && !has_ptrs) {
-		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k]) {
-				has_ptrs = true;
-				break;
-			}
-		}
+		has_ptrs = find_method_pointers (core, meta, lib, &native_result);
+		method_ptrs = native_result.method_ptrs;
 	}
 
 	if (mode == 'j') {
@@ -652,6 +703,7 @@ static int cmd_classes(RCore *core, char mode) {
 		pj_ki (pj, "version", meta->version);
 		pj_ks (pj, "unity_range", r2unity_unity_range_from_wire (meta->version));
 		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_native_result (pj, &native_result);
 		pj_kn (pj, "types", (ut64)type_count);
 		pj_kn (pj, "methods", (ut64)method_count);
 		pj_kn (pj, "fields", (ut64)field_count);
@@ -666,6 +718,7 @@ static int cmd_classes(RCore *core, char mode) {
 	} else if (mode == '*') {
 		r_cons_println (core->cons, "# r2 script generated by r2unity-c");
 		r_cons_printf (core->cons, "# Input file: %s\n", metadata_path && *metadata_path? metadata_path: "-");
+		print_native_result (core, &native_result);
 		if (!has_ptrs) {
 			r_cons_println (core->cons, "# Method addresses default to 0; run r2unity-D or set r2unity.library to recover native addresses.");
 		}
@@ -685,7 +738,7 @@ static int cmd_classes(RCore *core, char mode) {
 		}
 	}
 
-	R_FREE (method_ptrs);
+	r2unity_native_result_fini (&native_result);
 	R_FREE (interfaces);
 	R_FREE (fields);
 	R_FREE (methods);
@@ -714,16 +767,9 @@ static int cmd_symbols(RCore *core, char mode) {
 	size_t img_count = 0;
 	Il2CppImageDefinition *images = r2unity_get_images (meta, &img_count);
 
-	ut64 *method_ptrs = NULL;
-	bool has_ptrs = find_method_pointers (meta, lib, &method_ptrs);
-	if (method_ptrs && !has_ptrs) {
-		for (size_t k = 0; k < method_count; k++) {
-			if (method_ptrs[k]) {
-				has_ptrs = true;
-				break;
-			}
-		}
-	}
+	R2UnityNativeResult native_result = { 0 };
+	bool has_ptrs = find_method_pointers (core, meta, lib, &native_result);
+	ut64 *method_ptrs = native_result.method_ptrs;
 
 	int *type2img = r2unity_build_type_image_map (images, img_count, type_count);
 
@@ -734,7 +780,10 @@ static int cmd_symbols(RCore *core, char mode) {
 		pj_kb (pj, "ok", true);
 		pj_ki (pj, "version", meta->version);
 		pj_kb (pj, "has_ptrs", has_ptrs);
+		pj_native_result (pj, &native_result);
 		pj_ka (pj, "methods");
+	} else if (mode == '*') {
+		print_native_result (core, &native_result);
 	}
 
 	ut64 applied = 0, listed = 0;
@@ -833,7 +882,7 @@ static int cmd_symbols(RCore *core, char mode) {
 			lib);
 	}
 
-	R_FREE (method_ptrs);
+	r2unity_native_result_fini (&native_result);
 	R_FREE (type2img);
 	R_FREE (images);
 	R_FREE (methods);
@@ -1124,6 +1173,15 @@ static bool r2unity_init(RCorePluginSession *cps) {
 	r_config_node_desc (
 		r_config_set (cfg, "r2unity.library", ""),
 			"path to IL2CPP native library (empty = auto-detect)");
+	r_config_node_desc (
+		r_config_set (cfg, "r2unity.code_registration", ""),
+			"Il2CppCodeRegistration VA override (empty = flags/RBin symbols)");
+	r_config_node_desc (
+		r_config_set (cfg, "r2unity.metadata_registration", ""),
+			"Il2CppMetadataRegistration VA override (empty = flags/RBin symbols)");
+	r_config_node_desc (
+		r_config_set_b (cfg, "r2unity.force_heuristic", false),
+			"force section-scan fallback instead of CodeRegistration parsing");
 	r_config_lock (cfg, true);
 	return true;
 }

@@ -16,7 +16,8 @@ IL2CPP binary, and exposes managed metadata for reverse engineering.
   Linux, and flat fixture layouts.
 - Recovers managed images, assemblies, types, methods, method flags, and `ldstr`
   string literals.
-- Finds method-pointer tables heuristically in ELF, Mach-O, and PE binaries.
+- Resolves method pointers through r_bin symbols/CodeRegistration, with
+  r_bin or simple ELF/Mach-O/PE section-scan fallback for stripped binaries.
 - Lists P/Invoke and v29+ reverse-P/Invoke metadata, and emits CycloneDX 1.5
   SBOMs for managed assemblies.
 - Provides both a core r2 command plugin and an `r_bin` plugin for direct
@@ -67,6 +68,9 @@ The normal inputs are the native IL2CPP binary and the matching
 # recover method flags/comments as r2 commands
 ./r2unity -f /path/to/GameAssembly.dll /path/to/global-metadata.dat > methods.r2
 
+# override a known native registration symbol address
+./r2unity -f -O g_CodeRegistration=0x1234 /path/to/GameAssembly.dll /path/to/global-metadata.dat
+
 # list managed strings, interop metadata, or managed-assembly SBOM data
 ./r2unity -z /path/to/global-metadata.dat
 ./r2unity -P -j /path/to/GameAssembly.dll /path/to/global-metadata.dat
@@ -100,8 +104,8 @@ classes, imports, libraries, and header fields.
 ## Current Limits
 
 - v24.0 metadata, v36/v37 metadata, and WebAssembly are not supported.
-- Method-pointer recovery is heuristic; manual `-a` / `-c` pointer reads are
-  not implemented yet.
+- Method-pointer recovery needs CodeRegistration symbols/addresses or the
+  section-scan fallback; manual `-a` pointer reads are not implemented yet.
 - P/Invoke and reverse-P/Invoke output is metadata-first and does not fully
   recover native wrapper addresses or every `DllImportAttribute` detail.
 - SBOM output covers managed assemblies only, not native dependencies or file

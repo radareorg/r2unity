@@ -1010,13 +1010,13 @@ File-by-file map:
 	type/method/image/assembly/referenced-assembly decoders, P/Invoke
 	and reverse-P/Invoke enumerators, endian-safe LE readers
 	(`RD_LE32`, `RD_LE16`).
-- `src/lib/elf.c` — ELF32/64 loader, dynamic-table walk, relative
-	relocation application (`DT_REL`, `DT_RELA`, `DT_RELR`),
-	method-pointer-array heuristic.
-- `src/lib/macho.c` — Mach-O 64 loader (thin + FAT first-ARM64),
-	`LC_SEGMENT_64` walk, method-pointer-array heuristic.
-- `src/lib/pe.c` — PE32/PE32+ loader, section walk, method-pointer-
-	array heuristic.
+- `src/lib/bin/native.c` — shared native-binary view,
+	CodeRegistration/MetadataRegistration anchor resolution, structural
+	CodeRegistration parsing, RBin adapter, and the generic section-scan
+	fallback.
+- `src/lib/bin/elf.c`, `src/lib/bin/macho.c`, `src/lib/bin/pe.c` —
+	simple file-backed format parsers used when the RBin path cannot
+	recover method pointers.
 - `src/main.c` — CLI entry point and output emitters.
 
 Every row decoder reads via `r_read_le32`/`r_read_le16` (LE on all
@@ -1027,45 +1027,41 @@ retained for the two string pools.
 ## 6. Native-binary scanning, in one picture
 
 ```text
-ELF/Mach-O/PE image on disk
+Native IL2CPP image opened by r_bin or a simple ELF/Mach-O/PE mapper
     │
-    ├─ load & parse segments/sections
+    ├─ use r_bin sections/symbols/relocs when available
+    │       or simple file-backed sections for fallback
     │       ↓
-    │   segments { vaddr/vmaddr, size, perms, file mapping }
+    │   sections { vaddr, size, perms }
     │       ↓
     │   [text_lo, text_hi)  (executable union)
     │
-    ├─ ELF only: apply DT_REL / DT_RELA / DT_RELR relative fixups
-    │            so data-segment pointer arrays match the runtime
-    │            state (addends resolved, RELR bitmap expanded).
+    ├─ resolve g_CodeRegistration / g_MetadataRegistration
+    │       order: CLI -O / r2 eval vars / r2 flags / r_bin symbols
     │
-    ├─ scan each writable/data segment:
-    │     pass 1: {count32, pad32, ptr} tuple
-    │             (CodeRegistration-shaped anchor pair)
-    │     pass 2: {count32, ptr} generic
+    ├─ parse Il2CppCodeRegistration:
+    │     v24.2+: match codeGenModules[] to metadata images and
+    │             copy each module's methodPointers[]
+    │     older:  recover the global methodPointers[] pair
     │
-    └─ accept if a sample of entries at *ptr[] lands in text,
-       either already (post-relocations) or after + base_vaddr
-       (raw RVA case). Emit absolute VAs, one per method index.
+    └─ fallback when forced or unresolved:
+          scan non-executable data/readable sections for {count, ptr}
+          pairs whose table entries land in executable code.
+          Emit absolute VAs, one per method index.
 ```
 
-The heuristic is deliberately weaker than a structural
-`Il2CppCodeRegistration` match, but it works on every supported
-target and doesn't need symbol tables. It does, however, lock onto
-**one** `{count, ptr}` array, which on v24.2+ means one image's
-methods, not all of them (§3.1 / §3.7). A proper structural match
-that walks `codeGenModules[]` is on the roadmap.
+The structural path is preferred because it follows Unity's native
+registration structures instead of guessing which `{count, ptr}` pair
+is the method-pointer table. The fallback remains useful for stripped
+binaries or builds where the registration symbols cannot be resolved.
+The simple ELF/Mach-O/PE parsers do not reimplement full symbol-table
+parsing; they use explicit registration addresses when provided and
+otherwise feed their sections into the fallback scanner.
 
-For ELF the relocation pass matters because the Android linker
-produces method-pointer arrays almost entirely as
-`R_AARCH64_RELATIVE` (type 1027) entries. Without applying them,
-the raw array on disk is a run of zeros. Packed Android relocations
-(`DT_ANDROID_RELA`, `DT_ANDROID_RELR`) are not handled yet and
-cause the same "empty array" symptom on Play Store builds.
-
-For Mach-O and PE the linker has already materialised concrete
-values; no explicit relocation pass is required for the tables
-r2unity currently scans.
+Relocation handling is delegated to r_bin (`r_bin_patch_relocs`) on
+the RBin path. The simple ELF parser also applies the common relative
+REL/RELA/RELR forms so stripped Android/Linux inputs still have a
+lightweight fallback.
 
 ## 7. Data we can extract today vs. data we do not
 
@@ -1083,7 +1079,7 @@ Already extracted by r2unity (library + CLI):
 | referenced assemblies       | flat int32 array            |
 | P/Invoke marker methods     | `-P` enumeration            |
 | reverse-P/Invoke on v29+    | `-R` enumeration via BLOB   |
-| method-pointer VA (global)  | ELF/Mach-O/PE heuristic     |
+| method-pointer VA           | CodeRegistration parse + r_bin/simple-parser section-scan fallback |
 
 Data present on disk / in the binary but **not yet consumed**:
 
@@ -1109,14 +1105,14 @@ Data present on disk / in the binary but **not yet consumed**:
 	metadata load in compiled code (§2.12).
 - `fieldMarshaledSizes`, `unresolvedVirtualCall*`, WinRT tables,
 	`exportedTypeDefinitions`, RGCTX tables (§2.14–2.18).
-- Native-side `CodeRegistration` and `MetadataRegistration` walk →
+- Native-side registration data beyond method pointers →
 	`invokerPointers`, `customAttributeGenerators`,
 	`reversePInvokeWrappers`, `genericMethodPointers`,
-	`interopData`, `codeGenModules[]`, `types`, `fieldOffsets`,
-	`typeDefinitionsSizes`, `metadataUsages` (§3).
-- Richer native scanning: per-module `methodPointers` on v24.2+,
-	packed Android relocations, Mach-O FAT multi-slice,
-	chained-fixups, PE import table.
+	`interopData`, `types`, `fieldOffsets`, `typeDefinitionsSizes`,
+	`metadataUsages` (§3).
+- Richer native support: packed Android relocations and other loader
+	details not yet handled by r_bin for a given target, Mach-O FAT
+	multi-slice selection, chained-fixups, PE import table.
 
 ## 8. validation corpus
 
