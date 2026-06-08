@@ -570,48 +570,27 @@ static char *method_name_or_fallback(R2UnityMetadata *meta, const Il2CppMethodDe
 	return r_str_newf ("method.%zu", index);
 }
 
-static void sanitize_ic_name(char *s) {
-	if (!s) {
-		return;
+static char *r2_ic_name(const char *prefix, const char *name, size_t index) {
+	char *out = R_STR_ISNOTEMPTY (name)? r_str_newf ("%s", name): r_str_newf ("%s_%zu", prefix, index);
+	if (out) {
+		r_name_filter (out, -1);
 	}
-	r_name_filter (s, -1);
-	for (char *p = s; *p; p++) {
+	for (char *p = out; p && *p; p++) {
 		if (*p == '.' || *p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
 			*p = '_';
 		}
 	}
-}
-
-static char *r2_class_name(const char *name, size_t index) {
-	char *out = (name && *name)? strdup (name): r_str_newf ("type_%zu", index);
-	sanitize_ic_name (out);
-	if (!out || !*out) {
-		free (out);
-		out = r_str_newf ("type_%zu", index);
-	}
-	return out;
-}
-
-static char *r2_method_name(const char *name, size_t index) {
-	char *out = (name && *name)? strdup (name): r_str_newf ("method_%zu", index);
-	sanitize_ic_name (out);
-	if (!out || !*out) {
-		free (out);
-		out = r_str_newf ("method_%zu", index);
+	if (R_STR_ISEMPTY (out)) {
+		R_FREE (out);
+		return r_str_newf ("%s_%zu", prefix, index);
 	}
 	return out;
 }
 
 static void pj_hex(PJ *pj, const char *key, ut64 value, int width) {
-	RStrBuf *sb = r_strbuf_new ("");
-	if (!sb) {
-		pj_knull (pj, key);
-		return;
-	}
-	r_strbuf_appendf (sb, "0x%0*" PFMT64x, width, value);
-	char *s = r_strbuf_drain (sb);
-	pj_ks (pj, key, s? s: "");
-	free (s);
+	char hex[64];
+	snprintf (hex, sizeof (hex), "0x%0*" PFMT64x, width, value);
+	pj_ks (pj, key, hex);
 }
 
 static void pj_string_or_null(PJ *pj, const char *key, const char *value) {
@@ -791,7 +770,7 @@ static void emit_class_r2(R2UnityMetadata *meta,
 	bool quiet) {
 	const Il2CppTypeDefinition *td = &types[type_index];
 	char *name = r2unity_type_fullname (meta, td, type_index, R2U_NAME_FALLBACK_TYPE);
-	char *r2klass = r2_class_name (name, type_index);
+	char *r2klass = r2_ic_name ("type", name, type_index);
 	if (!quiet) {
 		char *base = type_name_from_index (meta, types, type_count, td->parentIndex, false);
 		if (base) {
@@ -811,7 +790,7 @@ static void emit_class_r2(R2UnityMetadata *meta,
 			continue;
 		}
 		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
-		char *r2meth = r2_method_name (mname, mi);
+		char *r2meth = r2_ic_name ("method", mname, mi);
 		printf ("ic+%s.%s @ 0x%" PFMT64x "\n", r2klass, r2meth, addr);
 		free (r2meth);
 		free (mname);
