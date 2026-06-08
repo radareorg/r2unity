@@ -58,36 +58,18 @@ thunk. r2unity does not do this today.
 
 ### 0.3 Native-side registration structures (rich, unused by r2unity)
 
-The IL2CPP runtime exposes interop targets through several fields
-on `Il2CppCodeRegistration` and through one per-type struct:
+The native table shapes are canonical in `doc/ptrtables.md`. For
+interop, the important native records are:
 
-```c
-/* Il2CppCodeRegistration (relevant slice) */
-ulong reversePInvokeWrapperCount;
-ulong reversePInvokeWrappers;        /* v22+ */
-ulong customAttributeCount;
-ulong customAttributeGenerators;     /* removed at v29 */
-ulong interopDataCount;
-ulong interopData;                   /* v23+ */
+- `CodeRegistration.reversePInvokeWrappers`
+- pre-v29 `CodeRegistration.customAttributeGenerators`
+- v23+ `CodeRegistration.interopData`
+- `Il2CppInteropData` entries for per-type marshal/delegate/COM
+  wrappers
 
-/* Il2CppInteropData — one per type involved in P/Invoke or COM */
-typedef struct {
-    ulong delegatePInvokeWrapperFunction;
-    ulong pinvokeMarshalToNativeFunction;
-    ulong pinvokeMarshalFromNativeFunction;
-    ulong marshalToNativeFunction;
-    ulong marshalFromNativeFunction;
-    ulong marshalCleanupFunction;
-    ulong ccwFunction;                 /* COM CCW               */
-    ulong guid;                        /* COM IID ptr           */
-    ulong type;                        /* -> Il2CppType *       */
-} Il2CppInteropData;
-```
-
-This is where the **real native VAs** live: the actual marshalled
-thunk that converts managed arguments to native, calls the
-`[DllImport]` target, and unmarshals return values. r2unity does
-not read any of this today.
+This is where the real native VAs live: the actual marshalled thunk that
+converts managed arguments to native, calls the `[DllImport]` target, and
+unmarshals return values. r2unity does not read any of this today.
 
 ## 1. Managed → native: `[DllImport]` and r2unity's `-P`
 
@@ -197,7 +179,7 @@ and does not answer:
 	`Utils/CustomAttributeDataReader.cs` is the reference decoder.
 
 
-- Locate `CodeRegistration` structurally (§3 of `doc/r2unity.md`),
+- Locate `CodeRegistration` structurally (`doc/ptrtables.md`),
 	walk `customAttributeGenerators[range_index]`, step through the
 	native thunk body, recover immediate operands that correspond to
 	`string` ctor arguments. Architecture-specific interpreter work.
@@ -338,7 +320,7 @@ the **native trampoline stubs** that call them. Steps to close the
 gap:
 
 1. Structurally locate `Il2CppCodeRegistration` in the binary
-	(§3 of `doc/r2unity.md`).
+	(`doc/ptrtables.md`).
 2. Read `reversePInvokeWrapperCount` and `reversePInvokeWrappers`.
 3. For each Mach-O/ELF/PE image: walk `codeGenModules[]`, read
 	each module's `reversePInvokeWrapperIndices[]`, and for every
@@ -446,7 +428,6 @@ Once wrapper VAs land, `-r` will switch to real
 - Il2CppDumper's `Utils/CustomAttributeDataReader.cs` — v29+ BLOB
 	decoder, authoritative reference.
 	<https://github.com/Perfare/Il2CppDumper>
-- `doc/r2unity.md` §3 — full `Il2CppCodeRegistration` /
-	`Il2CppMetadataRegistration` field list.
-- `doc/future.md` §2.9 and §3 — attribute table layouts per wire
-	version and the native-side interop pointer arrays.
+- `doc/ptrtables.md` - full `Il2CppCodeRegistration` /
+	`Il2CppMetadataRegistration` pointer-table reference.
+- `doc/future.md` §2.9 - attribute table layouts per wire version.

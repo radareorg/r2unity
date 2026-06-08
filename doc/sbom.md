@@ -67,7 +67,7 @@ None of this is implemented in r2unity today.
 Inferred:
 
 - Unity version range from the metadata wire version (mapping in
-	§3).
+	`doc/future.md`).
 - IL2CPP runtime version from symbol signatures or strings in
 	the native binary (e.g. the `il2cpp_init` / `il2cpp_runtime_version`
 	exports or a compiled-in string constant).
@@ -191,25 +191,9 @@ date, because the fully-flattened metadata does not carry a Unity
 version string (the Unity-version string exists as a constant
 inside the native binary, typically `"20xx.y.z.*"` or `"6000.y.z"`).
 
-r2unity uses this mapping:
-
-| Wire version | Unity release range |
-|--------------|---------------------|
-| 21           | 5.3.0 – 5.3.5       |
-| 22           | 5.3.6 – 5.4         |
-| 23           | 5.5                 |
-| 24           | 5.6 – 2020.1        |
-| 27           | 2020.2 – 2021.3     |
-| 29           | 2022.1 – 2022.3     |
-| 31           | 2023.1 – 2023.x     |
-| 38           | Unity 6 era         |
-| 39           | Unity 6 current     |
-
-The parser accepts shipped wire versions 24.1..31 and 38..39, rejects
-24.0 and 36..37, and keeps a compatibility path for unobserved
-32..35. `doc/future.md` §1.3 has the full version-to-sub-version
-matrix with additional rows for specific Unity 2018/2019/2020/2021/
-2022 minor releases and the v38/v39 Unity 6 metadata break.
+r2unity uses the wire-version mapping documented in `doc/future.md`.
+That file owns the Unity-release ranges, sub-version notes, accepted
+version set, rejected versions, and v38/v39 Unity 6 metadata break.
 
 ## 3. What the shipped `-S` does not do
 

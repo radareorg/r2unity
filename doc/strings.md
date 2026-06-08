@@ -294,5 +294,5 @@ text.
 	<https://blog.unity.com/technology/il2cpp-internals-a-tour-of-generated-code>
 - Il2CppDumper's string-literal emitter: `Il2CppDumper/Outputs/*`.
 	<https://github.com/Perfare/Il2CppDumper>
-- `doc/r2unity.md` §1.3 and §3.4 — metadata pool vs literal table
-	addressing model and the r2unity decode path.
+- `doc/r2unity.md` §1.3 - metadata pool vs literal table addressing
+	model. This document owns the `-z` decode path details.

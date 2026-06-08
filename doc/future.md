@@ -242,7 +242,7 @@ Size: **12 B** (v≤24.0) / **8 B** (v≥24.1). Sliced by
 `typeDef.fieldStart` / `typeDef.field_count`.
 
 Value: names and types for every field. Indirectly unlocks
-`MetadataRegistration.fieldOffsets` (§3.12), which is what actually
+`MetadataRegistration.fieldOffsets` (`doc/ptrtables.md`), which is what actually
 lets us label `ldr X, [x0, #0x18]` as `Player.health`. Without
 fields, struct-internal code is unreadable.
 
@@ -335,7 +335,8 @@ typedef struct {    /* Il2CppGenericParameter, 16 B */
 
 Value: reconstruct `Dictionary<TKey, TValue> where TKey :
 IComparable<TKey>`. Gate for using `methodSpecs` / `genericInsts`
-(§3) to emit real instantiation names like `List<int>::Add`.
+(`doc/ptrtables.md`) to emit real instantiation names like
+`List<int>::Add`.
 
 ### 2.7 `interfaces` + `interfaceOffsets` + `vtableMethods`
 
@@ -358,7 +359,7 @@ IComparable<TKey>`. Gate for using `methodSpecs` / `genericInsts`
 	```
 
 	`usageType == 3` → concrete method definition,
-	`usageType == 6` → `methodSpecs` (§3.11) index.
+	`usageType == 6` → `methodSpecs` (`doc/ptrtables.md`) index.
 
 Value: fully resolved virtual dispatch. Every `callvirt` / indexed
 vtable load gets a real method name. `class Foo : IDisposable,
@@ -421,7 +422,8 @@ Cross-reference:
 `encodedSourceIndex`'s top three bits encode `Il2CppMetadataUsage ∈
 { Invalid, TypeInfo, Il2CppType, MethodDef, FieldInfo,
 StringLiteral, MethodRef }`. `destinationIndex` is the slot in the
-native `MetadataRegistration.metadataUsages[]` pointer table (§3.14).
+native `MetadataRegistration.metadataUsages[]` pointer table
+(`doc/ptrtables.md`).
 
 Value: on v19–v26 builds, the compiled code is full of `ldr X,
 [g_MetadataUsages + offset]` loads. These tables plus
@@ -522,9 +524,8 @@ plugins via custom marshalling; safe to ignore for plain RE.
 typedef struct { int start; int length; } Il2CppRange;
 ```
 
-Correlates with
-`CodeRegistration.unresolvedVirtualCallPointers` (§3.5 of
-`r2unity.md`). Lets us name each unresolved-virtual-call stub with
+Correlates with native unresolved-call pointer tables documented in
+`doc/ptrtables.md`. Lets us name each unresolved-virtual-call stub with
 its parameter signature.
 
 ### 2.17 `windowsRuntimeTypeNames` + `windowsRuntimeStrings` +
@@ -533,183 +534,13 @@ its parameter signature.
 UWP / HoloLens only. For iOS + Android + desktop builds these sizes
 are always zero; a defensive parser bounds-checks and skips.
 
-## 3. Native binary — pointer arrays we don't follow
+## 3. Native binary pointer-table reference
 
-`src/lib/bin/native.c` currently recovers method pointers from
-`Il2CppCodeRegistration` when the registration anchor is available,
-and falls back to a generic section scan backed by r_bin or the simple
-ELF/Mach-O/PE parsers for stripped binaries.
-The registration structures expose many more pointer arrays, each
-with its own metadata table partner. Each entry below is a
-`{ ulong count; ulong ptr; }` pair inside the registration (see §3 of
-`doc/r2unity.md` for the full struct).
-
-### 3.1 `methodPointers` (≥v24.1 global; v≥24.2 per-module)
-
-What r2unity extracts today. From v24.2 onwards this field is on
-`Il2CppCodeGenModule`, **not** `CodeRegistration`, and there is one
-module per image. The structural path walks `codeGenModules[]` and
-maps modules back to `.dat` image rows; the fallback section scan may
-still find only one image's table because it does not know the
-registration structure.
-
-### 3.2 `invokerPointers`
-
-Reflection-dispatch invokers — one per unique method-signature
-shape (return type + param count + blittable-ness). Methods
-reference them via `methodDef.invokerIndex` (≤v24.1) or
-`Il2CppCodeGenModule.invokerIndices[]` (v≥24.2).
-
-Value: naming invokers doesn't rename methods directly, but it
-clusters methods by signature and makes reflection-based hook
-points discoverable.
-
-### 3.3 `customAttributeGenerators` (pre-v29)
-
-Per-range `void(void*)` — each one news up the attribute objects
-for one range. Given `attributesInfo` (§2.9), a tiny
-arch-specific interpreter walking the generator body recovers every
-attribute argument (strings, `typeof` references, enums). Required
-for pre-v29 reverse-P/Invoke DLL-name recovery.
-
-### 3.4 `reversePInvokeWrappers` (v22+)
-
-Array of native-to-managed thunks for `[MonoPInvokeCallback]`
-methods. Every callback the game registers with a C library routes
-through these. Naming them `ReversePInvoke_<method>` lights up
-native plugin callback surfaces (ads SDKs, analytics, audio,
-networking).
-
-### 3.5 `genericMethodPointers` + `genericAdjustorThunks`
-
-Array of function pointers for every generic-method instantiation
-present in the binary. Bridged to metadata via
-`MetadataRegistration.genericMethodTable` and `methodSpecs`:
-
-```c
-foreach (genericMethodTable[k]) {
-    spec = methodSpecs[k.genericMethodIndex];
-    addr = genericMethodPointers[k.indices.methodIndex];
-    /* emit "List<int>::Add @ 0x401234" */
-}
-```
-
-`genericAdjustorThunks` (v24.5, v27.1+) are struct-vs-class `T`
-fixup thunks: `mov x0, [x0, #8]; b real_body` (skip the
-`Il2CppObject` header for value-type `T`). Labelling both separates
-the thunk from the real body.
-
-Value: enormous on generics-heavy games. Without this, every
-instantiation is a distinct unnamed `sub_xxx`.
-
-### 3.6 `unresolvedVirtualCallPointers` (v22..v29); split at v29.1
-into `unresolvedInstanceCallPointers` +
-`unresolvedStaticCallPointers`
-
-Stubs the runtime patches when a virtual / interface call target
-becomes known. 1:1 with the metadata ranges in §2.16.
-
-### 3.7 `interopData` (v23+)
-
-Array of `Il2CppInteropData`, each containing a bundle of
-P/Invoke / COM-interop function pointers for one type. See §3.6 of
-`doc/r2unity.md` for the struct. Lights up every `[DllImport]`
-target wrapper and every COM bridge (CCW/RCW).
-
-### 3.8 `codeGenModules` (v24.2+)
-
-One `Il2CppCodeGenModule` per image. Struct definition in §3.7 of
-`doc/r2unity.md`.
-
-Highlights that are particularly useful on obfuscated games:
-
-- `moduleInitializer` — each image's `<Module>..cctor`, the per-
-	image static-init entry point.
-- `staticConstructorTypeIndices` — types whose `.cctor` runs at
-	load. Prime targets when keys/strings are materialised at
-	startup.
-- `adjustorThunks` + `adjustorThunkCount` — the generic-method
-	struct-vs-class fixup thunks.
-
-### 3.9 `MetadataRegistration.types` — the `Il2CppType` pool
-
-Every `typeIndex` anywhere in metadata indexes this array. Without
-it, we can't resolve any method return type, parameter type, field
-type, or interface name that goes beyond a plain `TypeDef`.
-
-`Il2CppExecutor.GetTypeName`
-(`third_party/Il2CppDumper/Utils/Il2CppExecutor.cs:61`) walks it
-recursively to produce qualified names, decoding the ECMA-335
-`ELEMENT_TYPE_*` byte (§II.23.1.16) to branch on:
-
-- primitive (`I1`, `U4`, `R8`, …)
-- `VALUETYPE`, `CLASS` (→ `typeDef.name`)
-- `SZARRAY`, `ARRAY` (→ rank + element recursion)
-- `PTR`, `BYREF` (→ pointee recursion)
-- `VAR`, `MVAR` (→ generic-parameter name)
-- `GENERICINST` (→ open type + type-argument tuple from
-	`genericInsts`)
-- `FNPTR`, `MODOPT`, `MODREQ`
-
-### 3.10 `MetadataRegistration.genericInsts` + `genericClasses`
-
-Pool of concrete type-argument tuples (`(int)`, `(string, int)`,
-`(Player, Dictionary<int, float>)`, …). Every generic-instantiation
-reference in the binary indexes into this array.
-
-### 3.11 `MetadataRegistration.methodSpecs` + `genericMethodTable`
-
-See §3.9 of `doc/r2unity.md` for the structs and consumption
-pattern. `GetMethodSpecName` reconstructs the full
-`Foo<string>.Bar<int>` form.
-
-### 3.12 `MetadataRegistration.fieldOffsets`
-
-- Pre-v22: flat `int32_t[]` indexed by global field index.
-- v22+: pointer-of-pointers — one `int32_t *` per type definition,
-	pointing at that type's field-offset array.
-
-`GetFieldOffsetFromIndex`
-(`third_party/Il2CppDumper/Il2Cpp/Il2Cpp.cs:274`) has the full
-logic, including the `-8` / `-16` adjustment for non-static
-value-type fields (to account for the `Il2CppObject` header:
-`MonitorData *` + `Il2CppClass *`; see ECMA-335 §II.25.4 and Unity's
-`Il2CppClass.cs`).
-
-Value: the byte-level layout of every class / struct. Once read, we
-can label every `ldr/str [this + N]` with a field name and type.
-Second only to method pointers in RE value.
-
-### 3.13 `MetadataRegistration.typeDefinitionsSizes`
-
-```c
-typedef struct {
-    uint32_t instance_size;              /* sizeof(object) w/ Il2CppObject header */
-    uint32_t native_size;                /* P/Invoke marshal size, 0 if N/A       */
-    uint32_t static_fields_size;
-    uint32_t thread_static_fields_size;
-} Il2CppTypeDefinitionSizes;             /* 16 B                                  */
-```
-
-Total size of every class / struct. Distinguishes 16-byte vs 24-byte
-Vector types. Gives us the element stride for array indexing
-(`ldr X, [Xn + Xindex * instance_size]`). `static_fields_size`
-lets us label every static-field access once we find the per-class
-statics pointer.
-
-### 3.14 `MetadataRegistration.metadataUsages` (v19..v26)
-
-The native side of §2.10. Huge `void *[]`. Each slot is an
-`Il2CppClass *`, `Il2CppType *`, `MethodInfo *`, `FieldInfo *`,
-managed `string *`, or generic `MethodInfo *` — decoded by
-combining with `metadataUsageLists` + `metadataUsagePairs`.
-
-Value: on pre-v27 binaries, labelling this array turns every
-indirect metadata load in the disassembly into a readable reference.
-From v27+ the mechanism was replaced by per-site inline globals and
-this array is gone; labels must instead be derived per-site via
-`codeGenModule.staticConstructorTypeIndices` + `moduleInitializer`
-and code scanning.
+Native registration structures and pointer-table shapes are documented in
+`doc/ptrtables.md`. This file keeps only version and row-layout details;
+put `Il2CppCodeRegistration`, `Il2CppMetadataRegistration`,
+`Il2CppCodeGenModule`, field-offset, generic-method, interop, invoker,
+and method-address recovery details in `doc/ptrtables.md`.
 
 ## 4. Implications for r2unity
 
@@ -757,50 +588,23 @@ and code scanning.
 	`third_party/Il2CppDumper/Il2Cpp/MetadataClass.cs` per wire
 	version.
 
-2. **Per-version header struct.** v38+ is now represented as the
-	31-section header. Remaining gaps: distinguish v24.0 from v24.1+
-	headers so assembly / image entries are decoded correctly on
-	unresolved-virtual-call pointer arrays.
+2. **Per-version header structs.** v38+ is represented as the
+	31-section header. Keep v24.0/v24.1+ discrimination explicit so
+	assembly, image, type, and method rows do not silently decode at
+	the wrong stride.
 
-	distinct wire version we claim to support (21, 22, 23, 24, 27,
-	29, 31, 38, 39). Pull candidates from the Il2CppDumper
-	issue-tracker corpus if new ones are needed.
+3. **Version fixtures.** Keep at least one fixture per distinct wire
+	version we claim to support (24.1, 27, 29, 31, 38, 39), plus edge
+	cases for rejected v24.0 and v36/v37.
 
 4. **Fail loudly on truly unknown versions.** v36/v37 are currently
 	rejected because their header shape is not proven. Keep that
-	confirm the layout.
+	behavior until a reliable reference or fixture confirms the layout.
 
-### 4.2 Feature additions (coverage)
+### 4.2 Feature additions
 
-Ordered by RE value vs. implementation effort:
-
-1. `parameters` table — small, unlocks real method signatures.
-2. `fields` table — small, prerequisite for field offsets.
-3. `CodeRegistration` / `MetadataRegistration` structural anchor
-	detection — unlocks everything in §3.
-4. `MetadataRegistration.types` + `fieldOffsets` +
-	`typeDefinitionsSizes` — class layouts + field labels.
-5. `codeGenModules` walk for v24.2+ — currently dropping most
-	methods on modern Unity.
-6. Attributes bundle:
-	- pre-v29: `attributesInfo` + `attributeTypes` +
-		`customAttributeGenerators` thunk interpreter
-	- v29+: `attributeDataRange` + `attributeData` BLOB decoder
-7. Generics bundle: `genericContainers` + `genericParameters` +
-	`methodSpecs` + `genericInsts` + `genericMethodPointers` +
-	`genericMethodTable`. Recovers `List<int>::Add`-style native
-	functions.
-8. `properties` + `events` — recompose `get_X`/`set_X`/`add_X` /
-	`remove_X` into clean declarations.
-9. `metadataUsageLists/Pairs` + `MetadataRegistration.metadataUsages`
-	— pre-v27 only, labels every indirect metadata load.
-10. `interfaces` + `interfaceOffsets` + `vtableMethods` — full
-	resolved virtual dispatch tables.
-11. `nestedTypes` — correct `Outer.Inner` naming.
-12. Richer SBOM: native dependencies (`DT_NEEDED`, `LC_LOAD_DYLIB`,
-	PE import table), file hashes, ELF build IDs, Mach-O UUIDs, PE
-	debug GUIDs, SPDX output.
-13. Manual `-a`/`-c` pointer read with pointer-width detection.
+Implementation tasks live in `doc/todo.md`. Keep this document focused
+on version/layout facts and portability constraints.
 
 ### 4.3 Architecture-neutral vs architecture-branching code
 
@@ -830,6 +634,7 @@ Ordered by RE value vs. implementation effort:
 
 - v39 is confirmed by the local Unity 6 reproducer. v38 support is
 	based on the current Il2CppDumper v39 source layout; keep it
+	guarded by fixtures as samples become available.
 - The local Unity install at
 	`/Applications/Unity/Hub/Editor/6000.4.5f1` ships IL2CPP sources
 	that assert `s_GlobalMetadataHeader->version == 39` in

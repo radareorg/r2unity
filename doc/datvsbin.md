@@ -64,7 +64,8 @@ Important native-side data:
 - runtime helper code, wrappers, trampolines, and runtime strings
 
 These tables provide the addresses and runtime layouts that
-`global-metadata.dat` intentionally does not carry.
+`global-metadata.dat` intentionally does not carry. `doc/ptrtables.md`
+is the detailed native pointer-table reference.
 
 ## Mapping model
 
