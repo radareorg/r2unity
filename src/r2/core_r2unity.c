@@ -88,11 +88,6 @@ static ut64 cfg_get_addr(RConfig *cfg, const char *key) {
 	return v? (ut64)strtoull (v, NULL, 0): 0;
 }
 
-static bool cfg_get_bool(RConfig *cfg, const char *key) {
-	const char *v = cfg_get_nonempty (cfg, key);
-	return v && (v[0] == '1' || v[0] == 't' || v[0] == 'T' || v[0] == 'y' || v[0] == 'Y');
-}
-
 static void cfg_set_addr(RConfig *cfg, const char *key, ut64 addr) {
 	char buf[32];
 	snprintf (buf, sizeof (buf), "0x%" PFMT64x, addr);
@@ -162,7 +157,7 @@ static bool current_binary_matches_path(RCore *core, const char *path) {
 
 static void native_options_from_core(RCore *core, R2UnityNativeOptions *opts) {
 	memset (opts, 0, sizeof (*opts));
-	opts->force_heuristic = cfg_get_bool (core->config, "r2unity.force_heuristic");
+	opts->force_heuristic = r_config_get_b (core->config, "r2unity.force_heuristic");
 	opts->code_registration_va = cfg_get_addr (core->config, "r2unity.code_registration");
 	opts->metadata_registration_va = cfg_get_addr (core->config, "r2unity.metadata_registration");
 	if (!opts->code_registration_va) {
@@ -1237,7 +1232,7 @@ static bool r2unity_init(RCorePluginSession *cps) {
 		r_config_set (cfg, "r2unity.metadata_registration", ""),
 			"Il2CppMetadataRegistration VA override (empty = flags/RBin symbols)");
 	r_config_node_desc (
-		r_config_set (cfg, "r2unity.force_heuristic", "false"),
+		r_config_set_b (cfg, "r2unity.force_heuristic", false),
 			"force section-scan fallback instead of CodeRegistration parsing");
 	r_config_lock (cfg, true);
 	return true;
