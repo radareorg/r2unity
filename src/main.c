@@ -460,6 +460,9 @@ static bool emit_r2_method(R2UnityMetadata *meta,
 	char *attrs = method_attrs (m->flags);
 	char *im = img? r2unity_get_string (meta, img->nameIndex): NULL;
 	if (im && *im) {
+		r_name_filter (im, -1);
+	}
+	if (im && *im) {
 		printf ("'@0x%" PFMT64x "'f sym.unity.%s.%s\n", addr, im, fullname);
 		printf ("'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n",
 			addr,
