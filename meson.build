@@ -1,7 +1,7 @@
 project(
   'r2unity',
   'c',
-  version: '1.1.0',
+  version: '1.2.0',
   default_options: [
     'c_std=c99',
     'warning_level=2',
