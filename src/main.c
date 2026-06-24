@@ -150,6 +150,18 @@ static void pj_native_result(PJ *pj, const R2UnityNativeResult *native) {
 	pj_kn (pj, "metadata_registration", native? native->metadata_registration_va: 0);
 	pj_kn (pj, "method_pointers", native? native->method_pointers_va: 0);
 	pj_kn (pj, "code_gen_modules", native? native->code_gen_modules_va: 0);
+	pj_ko (pj, "native_tables");
+	for (R2UnityNativeTableId i = 0; i < R2U_NATIVE_TABLE_COUNT; i++) {
+		const R2UnityNativeTable *table = native? &native->tables[i]: NULL;
+		if (!table || !table->va) {
+			continue;
+		}
+		pj_ko (pj, r2unity_native_table_name (i));
+		pj_kn (pj, "count", table->count);
+		pj_kn (pj, "va", table->va);
+		pj_end (pj);
+	}
+	pj_end (pj);
 }
 
 static void print_native_comment(const R2UnityNativeResult *native) {

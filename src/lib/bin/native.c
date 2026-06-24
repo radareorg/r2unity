@@ -9,6 +9,7 @@
 
 #define R2U_CODEGEN_SCAN_MAX_PROBES 128
 #define R2U_RBIN_CACHE_SIZE 0x4000
+#define R2U_NATIVE_TABLE_MAX_COUNT 0x400000
 
 static const char *const code_registration_names[] = {
 	"g_CodeRegistration",
@@ -26,6 +27,18 @@ static const char *const metadata_registration_names[] = {
 	"g_Il2CppMetadataRegistration",
 	"Il2CppMetadataRegistration",
 	NULL
+};
+
+static const char *const native_table_names[R2U_NATIVE_TABLE_COUNT] = {
+	"reversePInvokeWrappers",
+	"genericMethodPointers",
+	"genericAdjustorThunks",
+	"invokerPointers",
+	"unresolvedVirtualCallPointers",
+	"unresolvedInstanceCallPointers",
+	"unresolvedStaticCallPointers",
+	"interopData",
+	"windowsRuntimeFactoryTable"
 };
 
 static const ut8 *view_ptr_at(R2UnityNativeView *view, ut64 va, ut64 *actual_va) {
@@ -260,6 +273,136 @@ static size_t copy_global_method_table(R2UnityNativeView *view, size_t method_co
 	return copied;
 }
 
+static bool table_count_ok(ut32 count) {
+	return count > 0 && count <= R2U_NATIVE_TABLE_MAX_COUNT;
+}
+
+static bool count_near(ut32 count, size_t expected) {
+	return expected && count && count <= expected * 2 && (expected < 8 || count >= expected / 2);
+}
+
+static bool validate_code_table(R2UnityNativeView *view, ut64 table_va, ut32 count) {
+	if (!table_count_ok (count) || !table_va) {
+		return false;
+	}
+	ut32 sample = R_MIN ((ut32)128, count);
+	for (ut32 i = 0; i < sample; i++) {
+		ut64 raw = 0;
+		if (!read_ptr_at (view, table_va + (ut64)i * view->ptr_size, &raw)) {
+			return false;
+		}
+		if (code_va_from_raw (view, raw)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool validate_data_table(R2UnityNativeView *view, ut64 table_va, ut32 count) {
+	return table_count_ok (count) && table_va && view_ptr_at (view, table_va, NULL);
+}
+
+static bool validate_native_table(R2UnityNativeView *view, R2UnityNativeTableId id, ut64 table_va, ut32 count) {
+	return id == R2U_NATIVE_TABLE_INTEROP_DATA || id == R2U_NATIVE_TABLE_WINDOWS_RUNTIME_FACTORY_TABLE
+		? validate_data_table (view, table_va, count)
+		: validate_code_table (view, table_va, count);
+}
+
+static bool read_native_pair(R2UnityNativeView *view, ut64 *at, ut32 *count, ut64 *table_va) {
+	ut64 raw_table = 0;
+	if (!read_count_ptr_pair (view, *at, count, &raw_table)) {
+		return false;
+	}
+	*at += view->ptr_size == 8? 16: 8;
+	*table_va = data_va_from_raw (view, raw_table);
+	return true;
+}
+
+static size_t add_native_pair(R2UnityNativeView *view, ut64 *at, R2UnityNativeTableId id, R2UnityNativeTable *tables) {
+	ut32 count = 0;
+	ut64 table_va = 0;
+	if (!read_native_pair (view, at, &count, &table_va) || !validate_native_table (view, id, table_va, count)) {
+		return 0;
+	}
+	tables[id].va = table_va;
+	tables[id].count = count;
+	return 1;
+}
+
+static bool add_native_ptr(R2UnityNativeView *view, ut64 at, R2UnityNativeTableId id, R2UnityNativeTable *tables, ut32 count) {
+	ut64 raw_table = 0;
+	if (!read_ptr_at (view, at, &raw_table)) {
+		return false;
+	}
+	ut64 table_va = data_va_from_raw (view, raw_table);
+	if (!validate_native_table (view, id, table_va, count)) {
+		return false;
+	}
+	tables[id].va = table_va;
+	tables[id].count = count;
+	return true;
+}
+
+static bool old_custom_attribute_pair(R2UnityNativeView *view, ut64 *at) {
+	ut32 count = 0;
+	ut64 table_va = 0;
+	return read_native_pair (view, at, &count, &table_va)
+		&& (!count || validate_code_table (view, table_va, count));
+}
+
+static size_t resolve_native_tables_at(R2UnityNativeView *view, ut64 at, R2UnityNativeTable *tables, bool adjustor_thunks, int unresolved_mode) {
+	memset (tables, 0, R2U_NATIVE_TABLE_COUNT * sizeof (*tables));
+	size_t score = add_native_pair (view, &at, R2U_NATIVE_TABLE_REVERSE_PINVOKE_WRAPPERS, tables);
+	score += add_native_pair (view, &at, R2U_NATIVE_TABLE_GENERIC_METHOD_POINTERS, tables);
+	if (adjustor_thunks) {
+		ut32 count = (ut32)tables[R2U_NATIVE_TABLE_GENERIC_METHOD_POINTERS].count;
+		score += add_native_ptr (view, at, R2U_NATIVE_TABLE_GENERIC_ADJUSTOR_THUNKS, tables, count)? 1: 0;
+		at += view->ptr_size;
+	}
+	score += add_native_pair (view, &at, R2U_NATIVE_TABLE_INVOKER_POINTERS, tables);
+	if (unresolved_mode == 2 && !old_custom_attribute_pair (view, &at)) {
+		return 0;
+	}
+	if (unresolved_mode == 0) {
+		score += add_native_pair (view, &at, R2U_NATIVE_TABLE_UNRESOLVED_INSTANCE_CALL_POINTERS, tables);
+		score += add_native_pair (view, &at, R2U_NATIVE_TABLE_UNRESOLVED_STATIC_CALL_POINTERS, tables);
+	} else {
+		score += add_native_pair (view, &at, R2U_NATIVE_TABLE_UNRESOLVED_VIRTUAL_CALL_POINTERS, tables);
+	}
+	score += add_native_pair (view, &at, R2U_NATIVE_TABLE_INTEROP_DATA, tables);
+	score += add_native_pair (view, &at, R2U_NATIVE_TABLE_WINDOWS_RUNTIME_FACTORY_TABLE, tables);
+	return score;
+}
+
+static bool code_registration_has_method_prefix(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va) {
+	ut64 at = code_registration_va;
+	ut32 count = 0;
+	ut64 table_va = 0;
+	size_t method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
+	return read_native_pair (view, &at, &count, &table_va)
+		&& count_near (count, method_count)
+		&& validate_code_table (view, table_va, count);
+}
+
+static void parse_code_registration_tables(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va, R2UnityNativeResult *result) {
+	if (meta->version <= 24 && code_registration_has_method_prefix (meta, view, code_registration_va)) {
+		code_registration_va += view->ptr_size == 8? 16: 8;
+	}
+	R2UnityNativeTable candidate[R2U_NATIVE_TABLE_COUNT];
+	size_t best_score = 0;
+	int first = meta->version >= 29? 0: 1;
+	int last = meta->version >= 31? 1: 3;
+	for (int adjustor = 0; adjustor < 2; adjustor++) {
+		for (int mode = first; mode < last; mode++) {
+			size_t score = resolve_native_tables_at (view, code_registration_va, candidate, adjustor, mode);
+			if (score > best_score) {
+				memcpy (result->tables, candidate, sizeof (result->tables));
+				best_score = score;
+			}
+		}
+	}
+}
+
 static size_t copy_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables *tables, ut64 modules_va, ut64 *out_ptrs, bool require_names) {
 	if (!modules_va || !out_ptrs) {
 		return 0;
@@ -406,6 +549,7 @@ static bool parse_code_registration(R2UnityMetadata *meta, R2UnityNativeView *vi
 	if (!view_ptr_at (view, code_registration_va, &actual_code_va)) {
 		return false;
 	}
+	parse_code_registration_tables (meta, view, actual_code_va, result);
 	ut64 *method_ptrs = R_NEWS0 (ut64, method_count);
 	if (!method_ptrs) {
 		return false;
@@ -878,6 +1022,10 @@ R_API const char *r2unity_native_source_name(R2UnityNativeSource source) {
 	case R2U_NATIVE_SOURCE_HEURISTIC: return "heuristic";
 	default: return "none";
 	}
+}
+
+R_API const char *r2unity_native_table_name(R2UnityNativeTableId id) {
+	return id >= 0 && id < R2U_NATIVE_TABLE_COUNT? native_table_names[id]: NULL;
 }
 
 R_API const char *const *r2unity_native_code_registration_names(void) {

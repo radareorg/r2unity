@@ -209,6 +209,24 @@ typedef enum {
 	R2U_NATIVE_SOURCE_HEURISTIC
 } R2UnityNativeSource;
 
+typedef enum {
+	R2U_NATIVE_TABLE_REVERSE_PINVOKE_WRAPPERS,
+	R2U_NATIVE_TABLE_GENERIC_METHOD_POINTERS,
+	R2U_NATIVE_TABLE_GENERIC_ADJUSTOR_THUNKS,
+	R2U_NATIVE_TABLE_INVOKER_POINTERS,
+	R2U_NATIVE_TABLE_UNRESOLVED_VIRTUAL_CALL_POINTERS,
+	R2U_NATIVE_TABLE_UNRESOLVED_INSTANCE_CALL_POINTERS,
+	R2U_NATIVE_TABLE_UNRESOLVED_STATIC_CALL_POINTERS,
+	R2U_NATIVE_TABLE_INTEROP_DATA,
+	R2U_NATIVE_TABLE_WINDOWS_RUNTIME_FACTORY_TABLE,
+	R2U_NATIVE_TABLE_COUNT
+} R2UnityNativeTableId;
+
+typedef struct {
+	ut64 va;
+	ut64 count;
+} R2UnityNativeTable;
+
 typedef struct {
 	const char *name;
 	ut64 va;
@@ -230,6 +248,7 @@ typedef struct {
 	ut64 metadata_registration_va;
 	ut64 method_pointers_va;
 	ut64 code_gen_modules_va;
+	R2UnityNativeTable tables[R2U_NATIVE_TABLE_COUNT];
 	int ptr_size;
 } R2UnityNativeResult;
 
@@ -264,6 +283,7 @@ R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadat
 R_API ut64 r2unity_metadata_section_count(R2UnityMetadata *meta, R2UMetadataSectionId id);
 R_API ut64 r2unity_metadata_header_size(R2UnityMetadata *meta);
 R_API const char *r2unity_native_source_name(R2UnityNativeSource source);
+R_API const char *r2unity_native_table_name(R2UnityNativeTableId id);
 R_API const char *const *r2unity_native_code_registration_names(void);
 R_API const char *const *r2unity_native_metadata_registration_names(void);
 R_API void r2unity_native_result_fini(R2UnityNativeResult *result);
