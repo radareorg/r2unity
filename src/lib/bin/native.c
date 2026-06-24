@@ -379,8 +379,7 @@ static bool parse_global_method_pointers(R2UnityMetadata *meta, R2UnityNativeVie
 	return false;
 }
 
-bool r2unity_native_parse_code_registration(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va, R2UnityNativeSource source, R2UnityNativeResult *result) {
-	R_RETURN_VAL_IF_FAIL (meta && view && result && code_registration_va, false);
+static bool parse_code_registration(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va, R2UnityNativeSource source, R2UnityNativeResult *result) {
 	size_t method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
 	if (!method_count) {
 		return false;
@@ -438,29 +437,19 @@ static bool symbol_matches_any(const char *name, const char *const *names) {
 	return false;
 }
 
-ut64 r2unity_native_resolve_override(const R2UnityNativeOptions *options, const char *const *names) {
+static ut64 resolve_override(const R2UnityNativeOptions *options, const char *const *names) {
 	if (!options || !names) {
 		return 0;
 	}
 	for (size_t i = 0; i < options->symbols_count; i++) {
-		const char *name = options->symbols[i].name;
-		for (size_t j = 0; names[j]; j++) {
-			if (symbol_matches (name, names[j])) {
-				return options->symbols[i].va;
-			}
+		if (symbol_matches_any (options->symbols[i].name, names)) {
+			return options->symbols[i].va;
 		}
 	}
 	return 0;
 }
 
-bool r2unity_native_result_has_ptrs(const R2UnityNativeResult *result) {
-	return result && result->method_ptrs && result->has_method_ptrs;
-}
-
-void r2unity_native_take_heuristic_result(R2UnityNativeResult *result, ut64 *method_ptrs, int ptr_size) {
-	if (!result || !method_ptrs) {
-		return;
-	}
+static void take_heuristic_result(R2UnityNativeResult *result, ut64 *method_ptrs, int ptr_size) {
 	R_FREE (result->method_ptrs);
 	result->method_ptrs = method_ptrs;
 	result->has_method_ptrs = true;
@@ -609,8 +598,8 @@ static bool bin_name_matches(RBinName *name, const char *const *aliases) {
 		|| symbol_matches_any (name->fname, aliases));
 }
 
-static ut64 rbin_find_symbol(RBin *bin, RBinFile *bf, const char *const *aliases) {
-	RVecRBinSymbol *symbols = bf? r_bin_file_get_symbols_vec (bf): r_bin_get_symbols_vec (bin);
+static ut64 rbin_find_symbol(RBinFile *bf, const char *const *aliases) {
+	RVecRBinSymbol *symbols = r_bin_file_get_symbols_vec (bf);
 	if (!symbols) {
 		return 0;
 	}
@@ -663,7 +652,7 @@ static bool rbin_probe_table(R2UnityNativeView *view, ut64 arrptr, ut32 count, u
 	return copied >= R_MIN ((size_t)8, tocopy);
 }
 
-bool r2unity_native_scan_sections(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, R2UnityNativeResult *result) {
+static bool scan_sections(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, R2UnityNativeResult *result) {
 	size_t method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
 	if (!method_count || !sections || !section_count) {
 		return false;
@@ -710,33 +699,51 @@ bool r2unity_native_scan_sections(R2UnityMetadata *meta, R2UnityNativeView *view
 		}
 	}
 	if (found) {
-		r2unity_native_take_heuristic_result (result, candidate, view->ptr_size);
+		take_heuristic_result (result, candidate, view->ptr_size);
 		return true;
 	}
 	R_FREE (candidate);
 	return false;
 }
 
+static R2UnityNativeSource resolve_native_anchors(const R2UnityNativeOptions *options, RBinFile *bf, R2UnityNativeResult *result) {
+	ut64 code_registration_va = options? options->code_registration_va: 0;
+	ut64 metadata_registration_va = options? options->metadata_registration_va: 0;
+	R2UnityNativeSource source = R2U_NATIVE_SOURCE_OVERRIDE;
+	if (!code_registration_va) {
+		code_registration_va = resolve_override (options, code_registration_names);
+	}
+	if (!metadata_registration_va) {
+		metadata_registration_va = resolve_override (options, metadata_registration_names);
+	}
+	if (!code_registration_va && bf) {
+		code_registration_va = rbin_find_symbol (bf, code_registration_names);
+		source = R2U_NATIVE_SOURCE_SYMBOL;
+	}
+	if (!metadata_registration_va && bf) {
+		metadata_registration_va = rbin_find_symbol (bf, metadata_registration_names);
+	}
+	result->code_registration_va = code_registration_va;
+	result->metadata_registration_va = metadata_registration_va;
+	return source;
+}
+
+static bool try_code_registration(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeOptions *options, R2UnityNativeResult *result, R2UnityNativeSource source) {
+	if ((options && options->force_heuristic) || !result->code_registration_va) {
+		return false;
+	}
+	return parse_code_registration (meta, view, result->code_registration_va, source, result);
+}
+
 bool r2unity_native_run_view(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, const R2UnityNativeOptions *options, R2UnityNativeResult *result) {
 	R_RETURN_VAL_IF_FAIL (meta && view && result, false);
 	memset (result, 0, sizeof (*result));
 	result->ptr_size = view->ptr_size;
-	ut64 code_registration_va = options? options->code_registration_va: 0;
-	ut64 metadata_registration_va = options? options->metadata_registration_va: 0;
-	if (!code_registration_va) {
-		code_registration_va = r2unity_native_resolve_override (options, code_registration_names);
+	R2UnityNativeSource source = resolve_native_anchors (options, NULL, result);
+	if (try_code_registration (meta, view, options, result, source)) {
+		return true;
 	}
-	if (!metadata_registration_va) {
-		metadata_registration_va = r2unity_native_resolve_override (options, metadata_registration_names);
-	}
-	result->code_registration_va = code_registration_va;
-	result->metadata_registration_va = metadata_registration_va;
-	if (!(options && options->force_heuristic) && code_registration_va) {
-		if (r2unity_native_parse_code_registration (meta, view, code_registration_va, R2U_NATIVE_SOURCE_OVERRIDE, result)) {
-			return true;
-		}
-	}
-	return r2unity_native_scan_sections (meta, view, sections, section_count, result);
+	return scan_sections (meta, view, sections, section_count, result);
 }
 
 R_API const char *r2unity_native_source_name(R2UnityNativeSource source) {
@@ -791,33 +798,12 @@ R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, RBin *bin, R
 		.text_lo = text_lo,
 		.text_hi = text_hi
 	};
-	result->ptr_size = ptr_size;
-	ut64 code_registration_va = options? options->code_registration_va: 0;
-	ut64 metadata_registration_va = options? options->metadata_registration_va: 0;
-	R2UnityNativeSource source = R2U_NATIVE_SOURCE_OVERRIDE;
-	if (!code_registration_va) {
-		code_registration_va = r2unity_native_resolve_override (options, code_registration_names);
-	}
-	if (!metadata_registration_va) {
-		metadata_registration_va = r2unity_native_resolve_override (options, metadata_registration_names);
-	}
-	if (!code_registration_va) {
-		code_registration_va = rbin_find_symbol (bin, bf, code_registration_names);
-		source = R2U_NATIVE_SOURCE_SYMBOL;
-	}
-	if (!metadata_registration_va) {
-		metadata_registration_va = rbin_find_symbol (bin, bf, metadata_registration_names);
-	}
-	result->code_registration_va = code_registration_va;
-	result->metadata_registration_va = metadata_registration_va;
-	if (!(options && options->force_heuristic) && code_registration_va) {
-		if (r2unity_native_parse_code_registration (meta, &view, code_registration_va, source, result)) {
-			return true;
-		}
-	}
 	size_t section_count = 0;
 	R2UnityNativeSection *native_sections = rbin_sections (sections, &section_count);
-	bool ok = r2unity_native_scan_sections (meta, &view, native_sections, section_count, result);
+	result->ptr_size = ptr_size;
+	R2UnityNativeSource source = resolve_native_anchors (options, bf, result);
+	bool ok = try_code_registration (meta, &view, options, result, source)
+		|| scan_sections (meta, &view, native_sections, section_count, result);
 	R_FREE (native_sections);
 	return ok;
 }
