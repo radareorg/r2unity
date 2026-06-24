@@ -17,6 +17,7 @@ typedef struct {
 } R2UnityNativeView;
 
 typedef struct {
+	const char *name;
 	ut64 vaddr;
 	ut64 vsize;
 	ut64 size;

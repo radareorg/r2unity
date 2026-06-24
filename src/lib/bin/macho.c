@@ -140,6 +140,7 @@ static R2UnityNativeSection *macho_sections(MachO *mo, size_t *count) {
 	for (size_t i = 0; i < mo->nsegs; i++) {
 		const MachSeg *s = &mo->segs[i];
 		ut64 vsize = s->vmsize? s->vmsize: s->filesize;
+		out[i].name = s->name;
 		out[i].vaddr = s->vmaddr;
 		out[i].vsize = vsize;
 		out[i].size = R_MIN (s->filesize, vsize);

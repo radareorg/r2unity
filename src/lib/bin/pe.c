@@ -146,6 +146,7 @@ static R2UnityNativeSection *pe_sections(PeImg *pe, size_t *count) {
 	for (size_t i = 0; i < pe->nsecs; i++) {
 		const PeSec *s = &pe->secs[i];
 		ut64 vsize = s->vsize? s->vsize: s->filesize;
+		out[i].name = s->name;
 		out[i].vaddr = s->vaddr;
 		out[i].vsize = vsize;
 		out[i].size = R_MIN (s->filesize, vsize);

@@ -7,6 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#define R2U_CODEGEN_SCAN_MAX_PROBES 128
+#define R2U_RBIN_CACHE_SIZE 0x4000
+
 static const char *const code_registration_names[] = {
 	"g_CodeRegistration",
 	"s_CodeRegistration",
@@ -135,12 +138,35 @@ static bool image_name_eq(const char *module_name, const char *image_name) {
 	return !strcmp (r_file_basename (module_name), r_file_basename (image_name));
 }
 
-static int image_index_by_name(R2UnityMetadata *meta, const Il2CppImageDefinition *images, size_t image_count, const char *module_name) {
+typedef struct {
+	R2UnityMetadata *meta;
+	Il2CppImageDefinition *images;
+	Il2CppTypeDefinition *types;
+	size_t image_count;
+	size_t type_count;
+	size_t method_count;
+} R2UnityMethodTables;
+
+static bool method_tables_init(R2UnityMethodTables *tables, R2UnityMetadata *meta) {
+	memset (tables, 0, sizeof (*tables));
+	tables->meta = meta;
+	tables->images = r2unity_get_images (meta, &tables->image_count);
+	tables->types = r2unity_get_type_definitions (meta, &tables->type_count);
+	tables->method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
+	return tables->images && tables->image_count && tables->types && tables->type_count && tables->method_count;
+}
+
+static void method_tables_fini(R2UnityMethodTables *tables) {
+	R_FREE (tables->images);
+	R_FREE (tables->types);
+}
+
+static int image_index_by_name(R2UnityMethodTables *tables, const char *module_name) {
 	if (!module_name || !*module_name) {
 		return -1;
 	}
-	for (size_t i = 0; i < image_count; i++) {
-		char *name = r2unity_get_string (meta, images[i].nameIndex);
+	for (size_t i = 0; i < tables->image_count; i++) {
+		char *name = r2unity_get_string (tables->meta, tables->images[i].nameIndex);
 		bool match = image_name_eq (module_name, name);
 		free (name);
 		if (match) {
@@ -150,48 +176,49 @@ static int image_index_by_name(R2UnityMetadata *meta, const Il2CppImageDefinitio
 	return -1;
 }
 
-static size_t image_method_count(const Il2CppImageDefinition *image, const Il2CppTypeDefinition *types, size_t type_count) {
-	if (!image || !types || image->typeStart < 0) {
+static size_t image_method_count(R2UnityMethodTables *tables, size_t image_idx) {
+	if (image_idx >= tables->image_count) {
+		return 0;
+	}
+	const Il2CppImageDefinition *image = &tables->images[image_idx];
+	if (image->typeStart < 0) {
 		return 0;
 	}
 	size_t start = (size_t)image->typeStart;
-	size_t end = R_MIN (type_count, start + image->typeCount);
+	size_t end = R_MIN (tables->type_count, start + image->typeCount);
 	size_t count = 0;
 	for (size_t i = start; i < end; i++) {
-		count += types[i].method_count;
+		count += tables->types[i].method_count;
 	}
 	return count;
 }
 
-static size_t copy_image_method_table(R2UnityNativeView *view, const Il2CppImageDefinition *image, const Il2CppTypeDefinition *types, size_t type_count, size_t method_count, ut64 table_va, ut32 table_count, ut64 *out_ptrs, size_t *out_seen) {
-	if (out_seen) {
-		*out_seen = 0;
+static size_t copy_image_method_table(R2UnityNativeView *view, R2UnityMethodTables *tables, size_t image_idx, ut64 table_va, ut32 table_count, ut64 *out_ptrs) {
+	if (image_idx >= tables->image_count || !out_ptrs || !table_va) {
+		return 0;
 	}
-	if (!image || !types || !out_ptrs || image->typeStart < 0 || !table_va) {
+	const Il2CppImageDefinition *image = &tables->images[image_idx];
+	if (image->typeStart < 0) {
 		return 0;
 	}
 	size_t local = 0;
 	size_t copied = 0;
-	size_t seen = 0;
 	size_t start = (size_t)image->typeStart;
-	size_t end = R_MIN (type_count, start + image->typeCount);
+	size_t end = R_MIN (tables->type_count, start + image->typeCount);
 	for (size_t ti = start; ti < end && local < table_count; ti++) {
-		const Il2CppTypeDefinition *td = &types[ti];
+		const Il2CppTypeDefinition *td = &tables->types[ti];
 		if (td->methodStart < 0) {
 			local += td->method_count;
 			continue;
 		}
 		for (size_t k = 0; k < td->method_count && local < table_count; k++, local++) {
 			size_t mi = (size_t)td->methodStart + k;
-			if (mi >= method_count) {
+			if (mi >= tables->method_count) {
 				continue;
 			}
 			ut64 raw = 0;
 			if (!read_ptr_at (view, table_va + (ut64)local * view->ptr_size, &raw)) {
 				continue;
-			}
-			if (raw) {
-				seen++;
 			}
 			ut64 addr = code_va_from_raw (view, raw);
 			if (addr) {
@@ -199,9 +226,6 @@ static size_t copy_image_method_table(R2UnityNativeView *view, const Il2CppImage
 				copied++;
 			}
 		}
-	}
-	if (out_seen) {
-		*out_seen = seen;
 	}
 	return copied;
 }
@@ -236,108 +260,102 @@ static size_t copy_global_method_table(R2UnityNativeView *view, size_t method_co
 	return copied;
 }
 
+static size_t copy_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables *tables, ut64 modules_va, ut64 *out_ptrs, bool require_names) {
+	if (!modules_va || !out_ptrs) {
+		return 0;
+	}
+	ut64 *candidate = R_NEWS0 (ut64, tables->method_count);
+	bool *used_images = R_NEWS0 (bool, tables->image_count);
+	if (!candidate || !used_images) {
+		R_FREE (candidate);
+		R_FREE (used_images);
+		return 0;
+	}
+	size_t exact_matches = 0;
+	size_t copied = 0;
+	for (int pass = 0; pass < (require_names? 1: 2); pass++) {
+		for (size_t i = 0; i < tables->image_count; i++) {
+			ut64 raw_module = 0;
+			if (!read_ptr_at (view, modules_va + (ut64)i * view->ptr_size, &raw_module)) {
+				continue;
+			}
+			ut64 module_va = data_va_from_raw (view, raw_module);
+			if (!module_va) {
+				continue;
+			}
+			ut64 raw_name = 0;
+			ut32 mcount = 0;
+			ut64 raw_table = 0;
+			if (!read_ptr_at (view, module_va, &raw_name)
+				|| !read_count_ptr_pair (view, module_va + view->ptr_size, &mcount, &raw_table)) {
+				continue;
+			}
+			char *module_name = read_cstr_at (view, data_va_from_raw (view, raw_name));
+			int image_idx = image_index_by_name (tables, module_name);
+			if (pass == 0) {
+				if (image_idx < 0) {
+					free (module_name);
+					continue;
+				}
+				exact_matches++;
+			} else if (image_idx >= 0 || exact_matches > 0 || require_names) {
+				free (module_name);
+				continue;
+			} else {
+				image_idx = (i < tables->image_count)? (int)i: -1;
+			}
+			free (module_name);
+			if (image_idx < 0 || (size_t)image_idx >= tables->image_count || used_images[image_idx]) {
+				continue;
+			}
+			size_t expected = image_method_count (tables, (size_t)image_idx);
+			if (!expected || !mcount || mcount > tables->method_count * 2 || (expected > 8 && mcount < expected / 2)) {
+				continue;
+			}
+			ut64 table_va = data_va_from_raw (view, raw_table);
+			if (!table_va) {
+				continue;
+			}
+			size_t n = copy_image_method_table (view, tables, (size_t)image_idx, table_va, mcount, candidate);
+			if (n) {
+				used_images[image_idx] = true;
+				copied += n;
+			}
+		}
+	}
+	if (copied > 0) {
+		memcpy (out_ptrs, candidate, tables->method_count * sizeof (ut64));
+	}
+	R_FREE (candidate);
+	R_FREE (used_images);
+	return copied;
+}
+
 static bool parse_codegen_modules(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va, ut64 *out_ptrs, R2UnityNativeResult *result) {
-	size_t image_count = 0;
-	Il2CppImageDefinition *images = r2unity_get_images (meta, &image_count);
-	size_t type_count = 0;
-	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
-	size_t method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
-	if (!images || !image_count || !types || !type_count || !method_count) {
-		R_FREE (images);
-		R_FREE (types);
+	R2UnityMethodTables tables;
+	if (!method_tables_init (&tables, meta)) {
+		method_tables_fini (&tables);
 		return false;
 	}
-	bool found = false;
-	ut64 found_modules_va = 0;
-	size_t found_copied = 0;
 	size_t pair_span = view->ptr_size == 8? 16: 8;
-	for (ut64 off = 0; off + pair_span <= 0x280 && !found; off += 4) {
+	for (ut64 off = 0; off + pair_span <= 0x280; off += 4) {
 		ut32 count = 0;
 		ut64 raw_modules = 0;
-		if (!read_count_ptr_pair (view, code_registration_va + off, &count, &raw_modules) || count != image_count || !raw_modules) {
+		if (!read_count_ptr_pair (view, code_registration_va + off, &count, &raw_modules) || count != tables.image_count || !raw_modules) {
 			continue;
 		}
 		ut64 modules_va = data_va_from_raw (view, raw_modules);
-		if (!modules_va) {
-			continue;
+		size_t copied = copy_codegen_modules (view, &tables, modules_va, out_ptrs, false);
+		if (copied) {
+			result->code_gen_modules_va = modules_va;
+			result->method_pointers_va = modules_va;
+			R_LOG_DEBUG ("CodeRegistration codeGenModules=0x%" PFMT64x " copied=%zu", modules_va, copied);
+			method_tables_fini (&tables);
+			return true;
 		}
-		ut64 *candidate = R_NEWS (ut64, method_count);
-		bool *used_images = R_NEWS0 (bool, image_count);
-		if (!candidate || !used_images) {
-			R_FREE (candidate);
-			R_FREE (used_images);
-			break;
-		}
-		size_t exact_matches = 0;
-		size_t copied = 0;
-		for (int pass = 0; pass < 2; pass++) {
-			for (size_t i = 0; i < image_count; i++) {
-				ut64 raw_module = 0;
-				if (!read_ptr_at (view, modules_va + (ut64)i * view->ptr_size, &raw_module)) {
-					continue;
-				}
-				ut64 module_va = data_va_from_raw (view, raw_module);
-				if (!module_va) {
-					continue;
-				}
-				ut64 raw_name = 0;
-				ut32 mcount = 0;
-				ut64 raw_table = 0;
-				if (!read_ptr_at (view, module_va, &raw_name)
-					|| !read_count_ptr_pair (view, module_va + view->ptr_size, &mcount, &raw_table)) {
-					continue;
-				}
-				char *module_name = read_cstr_at (view, data_va_from_raw (view, raw_name));
-				int image_idx = image_index_by_name (meta, images, image_count, module_name);
-				if (pass == 0) {
-					if (image_idx < 0) {
-						free (module_name);
-						continue;
-					}
-					exact_matches++;
-				} else if (image_idx >= 0 || exact_matches > 0) {
-					free (module_name);
-					continue;
-				} else {
-					image_idx = (i < image_count)? (int)i: -1;
-				}
-				free (module_name);
-				if (image_idx < 0 || (size_t)image_idx >= image_count || used_images[image_idx]) {
-					continue;
-				}
-				size_t expected = image_method_count (&images[image_idx], types, type_count);
-				if (!expected || !mcount || mcount > method_count * 2 || (expected > 8 && mcount < expected / 2)) {
-					continue;
-				}
-				ut64 table_va = data_va_from_raw (view, raw_table);
-				if (!table_va) {
-					continue;
-				}
-				size_t seen = 0;
-				size_t n = copy_image_method_table (view, &images[image_idx], types, type_count, method_count, table_va, mcount, candidate, &seen);
-				if (n || seen) {
-					used_images[image_idx] = true;
-					copied += n;
-				}
-			}
-		}
-		if (copied > 0) {
-			memcpy (out_ptrs, candidate, method_count * sizeof (ut64));
-			found = true;
-			found_modules_va = modules_va;
-			found_copied = copied;
-		}
-		R_FREE (candidate);
-		R_FREE (used_images);
 	}
-	if (found) {
-		result->code_gen_modules_va = found_modules_va;
-		result->method_pointers_va = found_modules_va;
-		R_LOG_DEBUG ("CodeRegistration codeGenModules=0x%" PFMT64x " copied=%zu", found_modules_va, found_copied);
-	}
-	R_FREE (images);
-	R_FREE (types);
-	return found;
+	method_tables_fini (&tables);
+	return false;
 }
 
 static bool parse_global_method_pointers(R2UnityMetadata *meta, R2UnityNativeView *view, ut64 code_registration_va, ut64 *out_ptrs, R2UnityNativeResult *result) {
@@ -359,7 +377,7 @@ static bool parse_global_method_pointers(R2UnityMetadata *meta, R2UnityNativeVie
 		if (!table_va) {
 			continue;
 		}
-		ut64 *candidate = R_NEWS (ut64, method_count);
+		ut64 *candidate = R_NEWS0 (ut64, method_count);
 		if (!candidate) {
 			return false;
 		}
@@ -388,7 +406,7 @@ static bool parse_code_registration(R2UnityMetadata *meta, R2UnityNativeView *vi
 	if (!view_ptr_at (view, code_registration_va, &actual_code_va)) {
 		return false;
 	}
-	ut64 *method_ptrs = R_NEWS (ut64, method_count);
+	ut64 *method_ptrs = R_NEWS0 (ut64, method_count);
 	if (!method_ptrs) {
 		return false;
 	}
@@ -460,6 +478,9 @@ static void take_heuristic_result(R2UnityNativeResult *result, ut64 *method_ptrs
 typedef struct {
 	RBinFile *bf;
 	RVecRBinSection *sections;
+	ut64 cache_paddr;
+	ut64 cache_size;
+	ut8 cache[R2U_RBIN_CACHE_SIZE];
 	ut8 scratch[8];
 } R2UnityRBinView;
 
@@ -495,6 +516,28 @@ static const ut8 *rbin_ptr_at(void *user, ut64 va) {
 	ut64 paddr = 0;
 	if (!rv || !rv->bf || !rv->bf->buf || !rbin_va_to_paddr (rv, va, &paddr)) {
 		return NULL;
+	}
+	if (paddr > UT64_MAX - sizeof (rv->scratch)) {
+		return NULL;
+	}
+	ut64 end = paddr + sizeof (rv->scratch);
+	if (rv->cache_size && paddr >= rv->cache_paddr) {
+		ut64 delta = paddr - rv->cache_paddr;
+		if (delta <= rv->cache_size && sizeof (rv->scratch) <= rv->cache_size - delta) {
+			return rv->cache + delta;
+		}
+	}
+	ut64 bsz = r_buf_size (rv->bf->buf);
+	if (paddr < bsz) {
+		ut64 base = paddr & ~(ut64)(R2U_RBIN_CACHE_SIZE - 1);
+		ut64 len = R_MIN ((ut64)R2U_RBIN_CACHE_SIZE, bsz - base);
+		if (r_buf_read_at (rv->bf->buf, base, rv->cache, len) == (st64)len) {
+			rv->cache_paddr = base;
+			rv->cache_size = len;
+			if (end <= base + len) {
+				return rv->cache + (paddr - base);
+			}
+		}
 	}
 	if (r_buf_read_at (rv->bf->buf, paddr, rv->scratch, sizeof (rv->scratch)) != (st64)sizeof (rv->scratch)) {
 		return NULL;
@@ -579,6 +622,7 @@ static R2UnityNativeSection *rbin_sections(RVecRBinSection *sections, size_t *ou
 	size_t i = 0;
 	R_VEC_FOREACH (sections, s) {
 		ut64 vsize = s->vsize? s->vsize: s->size;
+		out[i].name = s->name;
 		out[i].vaddr = s->vaddr;
 		out[i].vsize = vsize;
 		out[i].size = R_MIN (s->size, vsize);
@@ -652,12 +696,92 @@ static bool rbin_probe_table(R2UnityNativeView *view, ut64 arrptr, ut32 count, u
 	return copied >= R_MIN ((size_t)8, tocopy);
 }
 
+static bool section_can_scan(const R2UnityNativeSection *s, ut64 min_size) {
+	if (!s || s->vaddr + s->size < s->vaddr) {
+		return false;
+	}
+	return !(s->perm & R_PERM_X) && (s->is_data || (s->perm & R_PERM_R)) && s->size >= min_size;
+}
+
+static bool section_can_scan_codegen(const R2UnityNativeSection *s, ut64 min_size) {
+	if (!section_can_scan (s, min_size)) {
+		return false;
+	}
+	if (!s->name) {
+		return s->perm & R_PERM_W;
+	}
+	return !strncmp (s->name, ".data.rel.ro", 12) || !strcmp (s->name, ".rdata") || !strncmp (s->name, "__DATA", 6);
+}
+
+static bool sections_contain_data(const R2UnityNativeSection *sections, size_t section_count, ut64 va, ut64 size) {
+	if (!va || !size || va + size < va) {
+		return false;
+	}
+	for (size_t i = 0; i < section_count; i++) {
+		const R2UnityNativeSection *s = &sections[i];
+		if (section_can_scan_codegen (s, size) && va >= s->vaddr && va + size <= s->vaddr + s->size) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool scan_codegen_modules(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, R2UnityNativeResult *result) {
+	R2UnityMethodTables tables;
+	ut64 *method_ptrs = NULL;
+	if (!method_tables_init (&tables, meta) || !sections || !section_count) {
+		goto done;
+	}
+	if (tables.image_count > UT64_MAX / view->ptr_size) {
+		goto done;
+	}
+	method_ptrs = R_NEWS0 (ut64, tables.method_count);
+	if (!method_ptrs) {
+		goto done;
+	}
+	ut64 modules_size = (ut64)tables.image_count * view->ptr_size;
+	size_t probes = 0;
+	size_t pair_span = view->ptr_size == 8? 16: 8;
+	ut64 step = view->ptr_size == 8? 8: 4;
+	for (size_t i = 0; i < section_count && probes < R2U_CODEGEN_SCAN_MAX_PROBES; i++) {
+		const R2UnityNativeSection *s = &sections[i];
+		if (!section_can_scan_codegen (s, pair_span)) {
+			continue;
+		}
+		for (ut64 off = 0; off + pair_span <= s->size && probes < R2U_CODEGEN_SCAN_MAX_PROBES; off += step) {
+			ut32 count = 0;
+			ut64 raw_modules = 0;
+			if (!read_count_ptr_pair (view, s->vaddr + off, &count, &raw_modules) || count != tables.image_count || !raw_modules) {
+				continue;
+			}
+			ut64 modules_va = data_va_from_raw (view, raw_modules);
+			if (!sections_contain_data (sections, section_count, modules_va, modules_size)) {
+				continue;
+			}
+			probes++;
+			size_t copied = copy_codegen_modules (view, &tables, modules_va, method_ptrs, true);
+			if (copied) {
+				result->code_gen_modules_va = modules_va;
+				result->method_pointers_va = modules_va;
+				take_heuristic_result (result, method_ptrs, view->ptr_size);
+				R_LOG_DEBUG ("heuristic codeGenModules=0x%" PFMT64x " copied=%zu", modules_va, copied);
+				method_tables_fini (&tables);
+				return true;
+			}
+		}
+	}
+done:
+	method_tables_fini (&tables);
+	R_FREE (method_ptrs);
+	return false;
+}
+
 static bool scan_sections(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, R2UnityNativeResult *result) {
 	size_t method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
 	if (!method_count || !sections || !section_count) {
 		return false;
 	}
-	ut64 *candidate = R_NEWS (ut64, method_count);
+	ut64 *candidate = R_NEWS0 (ut64, method_count);
 	if (!candidate) {
 		return false;
 	}
@@ -668,7 +792,7 @@ static bool scan_sections(R2UnityMetadata *meta, R2UnityNativeView *view, const 
 		const ut64 min_secsize = pass == 0? (ut64)(16 + view->ptr_size * 2): (ut64)(8 + view->ptr_size);
 		for (size_t i = 0; i < section_count && !found; i++) {
 			const R2UnityNativeSection *s = &sections[i];
-			if ((s->perm & R_PERM_X) || (!s->is_data && !(s->perm & R_PERM_R)) || s->size < min_secsize) {
+			if (!section_can_scan (s, min_secsize)) {
 				continue;
 			}
 			for (ut64 off = 0; off + min_secsize <= s->size; off += 4) {
@@ -743,7 +867,8 @@ bool r2unity_native_run_view(R2UnityMetadata *meta, R2UnityNativeView *view, con
 	if (try_code_registration (meta, view, options, result, source)) {
 		return true;
 	}
-	return scan_sections (meta, view, sections, section_count, result);
+	return scan_codegen_modules (meta, view, sections, section_count, result)
+		|| scan_sections (meta, view, sections, section_count, result);
 }
 
 R_API const char *r2unity_native_source_name(R2UnityNativeSource source) {
@@ -803,6 +928,7 @@ R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, RBin *bin, R
 	result->ptr_size = ptr_size;
 	R2UnityNativeSource source = resolve_native_anchors (options, bf, result);
 	bool ok = try_code_registration (meta, &view, options, result, source)
+		|| scan_codegen_modules (meta, &view, native_sections, section_count, result)
 		|| scan_sections (meta, &view, native_sections, section_count, result);
 	R_FREE (native_sections);
 	return ok;
