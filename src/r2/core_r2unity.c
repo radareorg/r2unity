@@ -6,6 +6,8 @@
 #include <r_lib.h>
 #include "../lib/lib.h"
 
+#define R2UNITY_NATIVE_TARGET_LIMIT 0x10000
+
 // clang-format off
 static const char *g_help_msg[] = {
 	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
@@ -14,7 +16,7 @@ static const char *g_help_msg[] = {
 	"r2unity-c", "[*j]", "enumerate classes, inheritance, methods, and fields",
 	"r2unity-D", "", "auto-detect companion files from current binary path",
 	"r2unity-i", "[j]", "summary (metadata version, type/method counts)",
-	"r2unity-s", "[*j]", "apply/list managed method symbols as flags + comments",
+	"r2unity-s", "[*j]", "apply/list managed/native symbols as flags + comments",
 	"r2unity-z", "[j]", "list managed string literals",
 	"r2unity-P", "[*j]", "list P/Invoke (managed -> native)",
 	"r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)",
@@ -185,6 +187,54 @@ static void print_native_result(RCore *core, const R2UnityNativeResult *result) 
 		result? result->metadata_registration_va: 0,
 		result? result->method_pointers_va: 0,
 		result? result->code_gen_modules_va: 0);
+}
+
+static void native_flag(RCore *core, bool print, const char *name, ut64 addr, ut32 size) {
+	if (print) {
+		r_cons_printf (core->cons, "'@0x%08"PFMT64x"'f %s %u\n", addr, name, size);
+	} else {
+		r_flag_set (core->flags, name, addr, size);
+	}
+}
+
+static void apply_native_tables(RCore *core, const R2UnityNativeResult *result, bool print) {
+	int ptr_size = result->ptr_size == 4? 4: 8;
+	for (R2UnityNativeTableId i = 0; i < R2U_NATIVE_TABLE_COUNT; i++) {
+		const R2UnityNativeTable *table = &result->tables[i];
+		if (!table->va) {
+			continue;
+		}
+		const char *name = r2unity_native_table_name (i);
+		ut32 size = (ut32)R_MIN ((ut64)UT32_MAX, R_MAX ((ut64)1, table->count * ptr_size));
+		char flag[128];
+		snprintf (flag, sizeof (flag), "r2unity.table.%s", name);
+		native_flag (core, print, flag, table->va, size);
+		ut64 count = R_MIN (table->count, (ut64)R2UNITY_NATIVE_TARGET_LIMIT);
+		if (i >= R2U_NATIVE_TABLE_INTEROP_DATA || !count) {
+			continue;
+		}
+		int len = (int)(count * ptr_size);
+		ut8 *buf = malloc (len);
+		if (!buf || !r_io_read_at (core->io, table->va, buf, len)) {
+			free (buf);
+			continue;
+		}
+		for (ut64 j = 0; j < count; j++) {
+			const ut8 *p = buf + j * ptr_size;
+			ut64 addr = (ptr_size == 8? r_read_le64 (p): (ut64)r_read_le32 (p)) & ~(ut64)1;
+			if (addr <= 0x1000 || !r_io_is_valid_offset (core->io, addr, R_PERM_X)) {
+				continue;
+			}
+			snprintf (flag, sizeof (flag), "sym.r2unity.%s.%" PFMT64u, name, j);
+			native_flag (core, print, flag, addr, 1);
+			if (print) {
+				r_cons_printf (core->cons, "af+ 0x%" PFMT64x " %s\n", addr, flag);
+			} else if (core->anal && !r_anal_get_function_at (core->anal, addr)) {
+				r_anal_create_function (core->anal, flag, addr, R_ANAL_FCN_TYPE_FCN, NULL);
+			}
+		}
+		free (buf);
+	}
 }
 
 /* Resolve (and on first use, cache into the eval vars) the metadata path for
@@ -798,6 +848,9 @@ static int cmd_symbols(RCore *core, char mode) {
 		print_native_result (core, &native_result);
 	}
 
+	if (mode != 'j') {
+		apply_native_tables (core, &native_result, mode == '*');
+	}
 	ut64 applied = 0, listed = 0;
 	for (size_t j = 0; j < method_count; j++) {
 		Il2CppMethodDefinition *m = &methods[j];
