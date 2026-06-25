@@ -137,7 +137,7 @@ jobs:
         run: ./release.sh notes > release-notes.md
 
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v3.0.0
+        uses: softprops/action-gh-release@v3.0.1
         with:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
