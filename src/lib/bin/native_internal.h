@@ -14,9 +14,11 @@ typedef struct {
 	ut64 base_vaddr;
 	ut64 text_lo;
 	ut64 text_hi;
+	const struct r2unity_native_section_t *sections;
+	size_t section_count;
 } R2UnityNativeView;
 
-typedef struct {
+typedef struct r2unity_native_section_t {
 	const char *name;
 	ut64 vaddr;
 	ut64 vsize;
@@ -25,7 +27,7 @@ typedef struct {
 	bool is_data;
 } R2UnityNativeSection;
 
-bool r2unity_native_run_view(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
+bool r2unity_native_resolve(R2UnityMetadata *meta, R2UnityNativeView *view, RBinFile *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 bool r2unity_find_method_pointers_macho(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 bool r2unity_find_method_pointers_pe(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);

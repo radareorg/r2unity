@@ -176,7 +176,9 @@ bool r2unity_find_method_pointers_pe(R2UnityMetadata *meta, const char *path, co
 	};
 	size_t section_count = 0;
 	R2UnityNativeSection *sections = pe_sections (&pe, &section_count);
-	bool ok = r2unity_native_run_view (meta, &view, sections, section_count, options, result);
+	view.sections = sections;
+	view.section_count = section_count;
+	bool ok = r2unity_native_resolve (meta, &view, NULL, options, result);
 	R_FREE (sections);
 	pe_free (&pe);
 	return ok;

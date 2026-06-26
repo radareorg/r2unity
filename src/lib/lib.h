@@ -3,8 +3,10 @@
 
 #include <r_util.h>
 
-struct r_bin_t;
-struct r_bin_file_t;
+#if !defined(R2_BIN_H) && !defined(R2_BIN_DWARF_H)
+typedef struct r_bin_t RBin;
+typedef struct r_bin_file_t RBinFile;
+#endif
 
 #define IL2CPP_MAGIC 0xFAB11BAF
 #define R2UNITY_METADATA_BASE_SECTION_COUNT 31
@@ -170,8 +172,7 @@ typedef struct {
 enum {
 	R2U_INTEROP_PINVOKE = 1, /* managed -> native, [DllImport] */
 	R2U_INTEROP_REVERSE_PINVOKE = 2, /* native -> managed, [MonoPInvokeCallback] */
-	R2U_INTEROP_UNMANAGED_ONLY = 3, /* [UnmanagedCallersOnly] (.NET 5+) */
-	R2U_INTEROP_INTEROP_DATA = 4 /* Il2CppInteropData entry (opaque) */
+	R2U_INTEROP_UNMANAGED_ONLY = 3 /* [UnmanagedCallersOnly] (.NET 5+) */
 };
 
 /* A single P/Invoke or reverse-P/Invoke entry.
@@ -274,6 +275,7 @@ R_API R2UnityInterop *r2unity_enumerate_pinvokes(R2UnityMetadata *meta, size_t *
  * Returns methods tagged with [MonoPInvokeCallback] or [UnmanagedCallersOnly].
  * Pre-v29 metadata returns NULL (attribute ctor args live in generator stubs). */
 R_API R2UnityInterop *r2unity_enumerate_reverse_pinvokes(R2UnityMetadata *meta, size_t *count);
+R_API bool r2unity_enrich_reverse_pinvokes_native(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityInterop **items, size_t *count);
 R_API void r2unity_free_interop(R2UnityInterop *items, size_t count);
 R_API char *r2unity_sbom_tostring(R2UnityMetadata *meta, const char *exe_path, const char *metadata_path, R2UnitySbomFormat format);
 R_API const char *r2unity_unity_range_from_wire(int wire);
@@ -289,7 +291,7 @@ R_API const char *const *r2unity_native_metadata_registration_names(void);
 R_API void r2unity_native_result_fini(R2UnityNativeResult *result);
 R_API bool r2unity_find_method_pointers(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 R_API bool r2unity_find_method_pointers_simple(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
-R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, struct r_bin_t *bin, struct r_bin_file_t *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
+R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, RBin *bin, RBinFile *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result);
 
 /* Companion-file discovery.
  *

@@ -2,9 +2,10 @@
 
 #define R_LOG_ORIGIN "r2unity.native"
 
-#include "native_internal.h"
 #include <r_bin.h>
+#include "native_internal.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define R2U_CODEGEN_SCAN_MAX_PROBES 128
@@ -403,19 +404,18 @@ static void parse_code_registration_tables(R2UnityMetadata *meta, R2UnityNativeV
 	}
 }
 
-static size_t copy_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables *tables, ut64 modules_va, ut64 *out_ptrs, bool require_names) {
-	if (!modules_va || !out_ptrs) {
+typedef size_t (*R2UnityCodegenModuleCb)(R2UnityNativeView *view, R2UnityMethodTables *tables, size_t image_idx, ut64 module_va, ut32 method_count, ut64 method_table_va, void *user);
+
+static size_t walk_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables *tables, ut64 modules_va, bool require_names, R2UnityCodegenModuleCb cb, void *user) {
+	if (!modules_va || !cb) {
 		return 0;
 	}
-	ut64 *candidate = R_NEWS0 (ut64, tables->method_count);
 	bool *used_images = R_NEWS0 (bool, tables->image_count);
-	if (!candidate || !used_images) {
-		R_FREE (candidate);
-		R_FREE (used_images);
+	if (!used_images) {
 		return 0;
 	}
 	size_t exact_matches = 0;
-	size_t copied = 0;
+	size_t total = 0;
 	for (int pass = 0; pass < (require_names? 1: 2); pass++) {
 		for (size_t i = 0; i < tables->image_count; i++) {
 			ut64 raw_module = 0;
@@ -459,18 +459,35 @@ static size_t copy_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables 
 			if (!table_va) {
 				continue;
 			}
-			size_t n = copy_image_method_table (view, tables, (size_t)image_idx, table_va, mcount, candidate);
+			size_t n = cb (view, tables, (size_t)image_idx, module_va, mcount, table_va, user);
 			if (n) {
 				used_images[image_idx] = true;
-				copied += n;
+				total += n;
 			}
 		}
 	}
+	R_FREE (used_images);
+	return total;
+}
+
+static size_t copy_codegen_module_methods(R2UnityNativeView *view, R2UnityMethodTables *tables, size_t image_idx, ut64 module_va, ut32 method_count, ut64 method_table_va, void *user) {
+	(void)module_va;
+	return copy_image_method_table (view, tables, image_idx, method_table_va, method_count, (ut64 *)user);
+}
+
+static size_t copy_codegen_modules(R2UnityNativeView *view, R2UnityMethodTables *tables, ut64 modules_va, ut64 *out_ptrs, bool require_names) {
+	if (!out_ptrs) {
+		return 0;
+	}
+	ut64 *candidate = R_NEWS0 (ut64, tables->method_count);
+	if (!candidate) {
+		return 0;
+	}
+	size_t copied = walk_codegen_modules (view, tables, modules_va, require_names, copy_codegen_module_methods, candidate);
 	if (copied > 0) {
 		memcpy (out_ptrs, candidate, tables->method_count * sizeof (ut64));
 	}
 	R_FREE (candidate);
-	R_FREE (used_images);
 	return copied;
 }
 
@@ -780,6 +797,41 @@ static R2UnityNativeSection *rbin_sections(RVecRBinSection *sections, size_t *ou
 	return out;
 }
 
+typedef struct {
+	R2UnityRBinView rv;
+	R2UnityNativeView view;
+	R2UnityNativeSection *sections;
+	size_t section_count;
+} R2UnityRBinNative;
+
+static bool rbin_native_init(R2UnityRBinNative *rn, RBin *bin, RBinFile *bf) {
+	memset (rn, 0, sizeof (*rn));
+	if (!bin || !bf || !bf->buf) {
+		return false;
+	}
+	(void)r_bin_patch_relocs (bf);
+	RVecRBinSection *sections = r_bin_file_get_sections_vec (bf);
+	ut64 text_lo = 0;
+	ut64 text_hi = 0;
+	rbin_text_range (sections, &text_lo, &text_hi);
+	rn->rv.bf = bf;
+	rn->rv.sections = sections;
+	rn->view.user = &rn->rv;
+	rn->view.ptr_at = rbin_ptr_at;
+	rn->view.ptr_size = rbin_ptr_size (bin);
+	rn->view.base_vaddr = rbin_base_vaddr (bf, sections);
+	rn->view.text_lo = text_lo;
+	rn->view.text_hi = text_hi;
+	rn->sections = rbin_sections (sections, &rn->section_count);
+	rn->view.sections = rn->sections;
+	rn->view.section_count = rn->section_count;
+	return true;
+}
+
+static void rbin_native_fini(R2UnityRBinNative *rn) {
+	R_FREE (rn->sections);
+}
+
 static bool bin_name_matches(RBinName *name, const char *const *aliases) {
 	return name && (symbol_matches_any (name->name, aliases)
 		|| symbol_matches_any (name->oname, aliases)
@@ -1003,16 +1055,102 @@ static bool try_code_registration(R2UnityMetadata *meta, R2UnityNativeView *view
 	return parse_code_registration (meta, view, result->code_registration_va, source, result);
 }
 
-bool r2unity_native_run_view(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeSection *sections, size_t section_count, const R2UnityNativeOptions *options, R2UnityNativeResult *result) {
+bool r2unity_native_resolve(R2UnityMetadata *meta, R2UnityNativeView *view, RBinFile *bf, const R2UnityNativeOptions *options, R2UnityNativeResult *result) {
 	R_RETURN_VAL_IF_FAIL (meta && view && result, false);
 	memset (result, 0, sizeof (*result));
 	result->ptr_size = view->ptr_size;
-	R2UnityNativeSource source = resolve_native_anchors (options, NULL, result);
-	if (try_code_registration (meta, view, options, result, source)) {
-		return true;
+	R2UnityNativeSource source = resolve_native_anchors (options, bf, result);
+	return try_code_registration (meta, view, options, result, source)
+		|| scan_codegen_modules (meta, view, view->sections, view->section_count, result)
+		|| scan_sections (meta, view, view->sections, view->section_count, result);
+}
+
+static R2UnityInterop *interop_by_image_token(R2UnityInterop *items, size_t count, int image_idx, ut32 token) {
+	for (size_t i = 0; items && i < count; i++) {
+		if (items[i].image_index == image_idx && items[i].token == token) {
+			return &items[i];
+		}
 	}
-	return scan_codegen_modules (meta, view, sections, section_count, result)
-		|| scan_sections (meta, view, sections, section_count, result);
+	return NULL;
+}
+
+static ut64 codegen_reverse_pair_off(R2UnityNativeView *view) {
+	size_t pair_span = view->ptr_size == 8? 16: 8;
+	return (ut64)view->ptr_size + pair_span + pair_span + (ut64)view->ptr_size;
+}
+
+typedef struct {
+	const R2UnityNativeTable *wrappers;
+	R2UnityInterop **items;
+	size_t *count;
+	ut64 reverse_off;
+	ut64 tuple_size;
+} R2UnityReverseCtx;
+
+static size_t apply_reverse_codegen_module(R2UnityNativeView *view, R2UnityMethodTables *tables, size_t image_idx, ut64 module_va, ut32 method_count, ut64 method_table_va, void *user) {
+	R2UnityReverseCtx *ctx = (R2UnityReverseCtx *)user;
+	ut32 reverse_count = 0;
+	ut64 raw_indices = 0;
+	(void)tables;
+	(void)method_count;
+	(void)method_table_va;
+	if (!read_count_ptr_pair (view, module_va + ctx->reverse_off, &reverse_count, &raw_indices)
+		|| !table_count_ok (reverse_count)) {
+		return 0;
+	}
+	ut64 indices_va = data_va_from_raw (view, raw_indices);
+	size_t applied = 0;
+	for (ut32 k = 0; indices_va && k < reverse_count; k++) {
+		ut64 tuple = indices_va + (ut64)k * ctx->tuple_size;
+		ut32 token = 0;
+		ut32 raw_index = 0;
+		if (!read_u32_at (view, tuple, &token)
+			|| !read_u32_at (view, tuple + 4, &raw_index)
+			|| (ut64)raw_index >= ctx->wrappers->count) {
+			continue;
+		}
+		ut64 raw = 0;
+		if (!read_ptr_at (view, ctx->wrappers->va + (ut64)raw_index * view->ptr_size, &raw)) {
+			continue;
+		}
+		ut64 wrapper_va = code_va_from_raw (view, raw);
+		if (!wrapper_va) {
+			continue;
+		}
+		R2UnityInterop *it = interop_by_image_token (*ctx->items, *ctx->count, (int)image_idx, token);
+		if (it && !it->wrapper_va) {
+			it->wrapper_va = wrapper_va;
+			it->wrapper_index = raw_index;
+			applied++;
+		}
+	}
+	return applied;
+}
+
+static size_t apply_reverse_codegen_modules(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeResult *result, R2UnityInterop **items, size_t *count) {
+	const R2UnityNativeTable *wrappers = &result->tables[R2U_NATIVE_TABLE_REVERSE_PINVOKE_WRAPPERS];
+	if (!result->code_gen_modules_va || !wrappers->va || !wrappers->count) {
+		return 0;
+	}
+	R2UnityMethodTables tables;
+	if (!method_tables_init (&tables, meta)) {
+		method_tables_fini (&tables);
+		return 0;
+	}
+	R2UnityReverseCtx ctx = {
+		.wrappers = wrappers,
+		.items = items,
+		.count = count,
+		.reverse_off = codegen_reverse_pair_off (view),
+		.tuple_size = view->ptr_size == 8? 24: 16
+	};
+	size_t applied = walk_codegen_modules (view, &tables, result->code_gen_modules_va, false, apply_reverse_codegen_module, &ctx);
+	method_tables_fini (&tables);
+	return applied;
+}
+
+static void enrich_reverse_pinvokes_native_view(R2UnityMetadata *meta, R2UnityNativeView *view, const R2UnityNativeResult *result, R2UnityInterop **items, size_t *count) {
+	apply_reverse_codegen_modules (meta, view, result, items, count);
 }
 
 R_API const char *r2unity_native_source_name(R2UnityNativeSource source) {
@@ -1050,35 +1188,33 @@ R_API bool r2unity_find_method_pointers_rbin(R2UnityMetadata *meta, RBin *bin, R
 	if (!bf) {
 		bf = r_bin_cur (bin);
 	}
-	if (!bf || !bf->buf) {
+	R2UnityRBinNative rn;
+	if (!rbin_native_init (&rn, bin, bf)) {
 		return false;
 	}
-	(void)r_bin_patch_relocs (bf);
-	RVecRBinSection *sections = r_bin_file_get_sections_vec (bf);
-	int ptr_size = rbin_ptr_size (bin);
-	ut64 text_lo = 0;
-	ut64 text_hi = 0;
-	rbin_text_range (sections, &text_lo, &text_hi);
-	R2UnityRBinView rv = {
-		.bf = bf,
-		.sections = sections
-	};
-	R2UnityNativeView view = {
-		.user = &rv,
-		.ptr_at = rbin_ptr_at,
-		.ptr_size = ptr_size,
-		.base_vaddr = rbin_base_vaddr (bf, sections),
-		.text_lo = text_lo,
-		.text_hi = text_hi
-	};
-	size_t section_count = 0;
-	R2UnityNativeSection *native_sections = rbin_sections (sections, &section_count);
-	result->ptr_size = ptr_size;
-	R2UnityNativeSource source = resolve_native_anchors (options, bf, result);
-	bool ok = try_code_registration (meta, &view, options, result, source)
-		|| scan_codegen_modules (meta, &view, native_sections, section_count, result)
-		|| scan_sections (meta, &view, native_sections, section_count, result);
-	R_FREE (native_sections);
+	bool ok = r2unity_native_resolve (meta, &rn.view, bf, options, result);
+	rbin_native_fini (&rn);
+	return ok;
+}
+
+static bool enrich_reverse_pinvokes_native_rbin(R2UnityMetadata *meta, RBin *bin, RBinFile *bf, const R2UnityNativeOptions *options, R2UnityInterop **items, size_t *count) {
+	if (!meta || !bin || !items || !count) {
+		return false;
+	}
+	if (!bf) {
+		bf = r_bin_cur (bin);
+	}
+	R2UnityRBinNative rn;
+	if (!rbin_native_init (&rn, bin, bf)) {
+		return false;
+	}
+	R2UnityNativeResult result = { 0 };
+	bool ok = r2unity_native_resolve (meta, &rn.view, bf, options, &result);
+	if (ok) {
+		enrich_reverse_pinvokes_native_view (meta, &rn.view, &result, items, count);
+	}
+	r2unity_native_result_fini (&result);
+	rbin_native_fini (&rn);
 	return ok;
 }
 
@@ -1108,6 +1244,27 @@ R_API bool r2unity_find_method_pointers(R2UnityMetadata *meta, const char *path,
 		return true;
 	}
 	return r2unity_find_method_pointers_simple (meta, path, options, result);
+}
+
+R_API bool r2unity_enrich_reverse_pinvokes_native(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityInterop **items, size_t *count) {
+	R_RETURN_VAL_IF_FAIL (meta && path && items && count, false);
+	RBin *bin = r_bin_new ();
+	bool ok = false;
+	if (bin) {
+		RIO *io = r_io_new ();
+		if (io) {
+			r_libstore_load (bin->libstore);
+			r_io_bind (io, &bin->iob);
+			RBinFileOptions opt;
+			r_bin_file_options_init (&opt, -1, 0, 0, 0);
+			if (r_bin_open (bin, path, &opt)) {
+				ok = enrich_reverse_pinvokes_native_rbin (meta, bin, r_bin_cur (bin), options, items, count);
+			}
+		}
+		r_io_free (io);
+		r_bin_free (bin);
+	}
+	return ok;
 }
 
 R_API bool r2unity_find_method_pointers_simple(R2UnityMetadata *meta, const char *path, const R2UnityNativeOptions *options, R2UnityNativeResult *result) {

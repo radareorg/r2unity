@@ -277,8 +277,36 @@ static int interop_cmp(const void *a, const void *b) {
 	return strcmp (xn, yn);
 }
 
-static int emit_pinvokes(R2UnityMetadata *meta, const char *exe_path, bool is_json, bool is_r2, bool quiet) {
-	(void)exe_path;
+static char *interop_flag_name(const char *prefix, const R2UnityInterop *it) {
+	char *name = it->image_name && *it->image_name
+		? r_str_newf ("%s.%s.%s", prefix, it->image_name, it->name)
+		: r_str_newf ("%s.%s", prefix, it->name);
+	if (name) {
+		r_name_filter (name, -1);
+		if (!r_name_check (name)) {
+			R_FREE (name);
+		}
+	}
+	return name;
+}
+
+static void print_interop_wrapper_flag(const char *name, ut64 wrapper_va) {
+	if (wrapper_va && name) {
+		printf ("'@0x%" PFMT64x "'f %s\n", wrapper_va, name);
+		printf ("'@0x%" PFMT64x "'af+ $$ %s\n", wrapper_va, name);
+	}
+}
+
+static void json_interop_wrapper(FILE *f, const R2UnityInterop *it) {
+	if (it->wrapper_va) {
+		fprintf (f, ",\"wrapper_va\":\"0x%" PFMT64x "\"", it->wrapper_va);
+	}
+	if (it->wrapper_index != UINT32_MAX) {
+		fprintf (f, ",\"wrapper_index\":%u", it->wrapper_index);
+	}
+}
+
+static int emit_pinvokes(R2UnityMetadata *meta, bool is_json, bool is_r2, bool quiet) {
 	size_t n = 0;
 	R2UnityInterop *items = r2unity_enumerate_pinvokes (meta, &n);
 	if (items && n > 1) {
@@ -321,18 +349,16 @@ static int emit_pinvokes(R2UnityMetadata *meta, const char *exe_path, bool is_js
 			if (!it->name) {
 				continue;
 			}
-			char buf[1024];
-			if (it->image_name && *it->image_name) {
-				snprintf (buf, sizeof (buf), "sym.unity.%s.%s", it->image_name, it->name);
-			} else {
-				snprintf (buf, sizeof (buf), "sym.unity.%s", it->name);
+			char *name = interop_flag_name ("sym.unity", it);
+			if (!name) {
+				continue;
 			}
-			r_name_filter (buf, -1);
 			if (it->dll_name) {
-				printf ("# PInvoke %s -> %s!%s\n", buf, it->dll_name, it->entry_name? it->entry_name: it->name);
+				printf ("# PInvoke %s -> %s!%s\n", name, it->dll_name, it->entry_name? it->entry_name: it->name);
 			} else {
-				printf ("# PInvoke %s -> <unresolved>\n", buf);
+				printf ("# PInvoke %s -> <unresolved>\n", name);
 			}
+			free (name);
 		}
 	} else {
 		if (!quiet) {
@@ -368,10 +394,12 @@ static const char *interop_kind_label(uint8_t kind) {
 	}
 }
 
-static int emit_reverse_pinvokes(R2UnityMetadata *meta, const char *exe_path, bool is_json, bool is_r2, bool quiet) {
-	(void)exe_path;
+static int emit_reverse_pinvokes(R2UnityMetadata *meta, const char *exe_path, const R2UnityNativeOptions *native, bool is_json, bool is_r2, bool quiet) {
 	size_t n = 0;
 	R2UnityInterop *items = r2unity_enumerate_reverse_pinvokes (meta, &n);
+	if (exe_path && *exe_path) {
+		r2unity_enrich_reverse_pinvokes_native (meta, exe_path, native, &items, &n);
+	}
 	if (items && n > 1) {
 		qsort (items, n, sizeof (R2UnityInterop), interop_cmp);
 	}
@@ -389,6 +417,7 @@ static int emit_reverse_pinvokes(R2UnityMetadata *meta, const char *exe_path, bo
 			fprintf (f, "\",\"method\":\"");
 			json_escape (f, it->name? it->name: "");
 			fprintf (f, "\",\"token\":\"0x%08x\",\"flags\":\"0x%04x\",\"iflags\":\"0x%04x\",\"attribute\":\"%s\",\"confidence\":%u", it->token, it->flags, it->iflags, interop_kind_label (it->kind), (unsigned)it->confidence);
+			json_interop_wrapper (f, it);
 			fputc ('}', f);
 		}
 		fprintf (f, "]}\n");
@@ -398,14 +427,13 @@ static int emit_reverse_pinvokes(R2UnityMetadata *meta, const char *exe_path, bo
 			if (!it->name) {
 				continue;
 			}
-			char buf[1024];
-			if (it->image_name && *it->image_name) {
-				snprintf (buf, sizeof (buf), "sym.unity.reverse.%s.%s", it->image_name, it->name);
-			} else {
-				snprintf (buf, sizeof (buf), "sym.unity.reverse.%s", it->name);
+			char *name = interop_flag_name ("sym.unity.reverse", it);
+			if (!name) {
+				continue;
 			}
-			r_name_filter (buf, -1);
-			printf ("# ReversePInvoke %s [%s]\n", buf, interop_kind_label (it->kind));
+			printf ("# ReversePInvoke %s [%s]\n", name, interop_kind_label (it->kind));
+			print_interop_wrapper_flag (name, it->wrapper_va);
+			free (name);
 		}
 	} else {
 		if (!quiet) {
@@ -1095,8 +1123,8 @@ int main(int argc, char *argv[]) {
 			return 1;
 		}
 		int rc = reverse_pinvokes
-			? emit_reverse_pinvokes (meta, exe_path, json_one_line, r2_script, quiet)
-			: emit_pinvokes (meta, exe_path, json_one_line, r2_script, quiet);
+			? emit_reverse_pinvokes (meta, exe_path, &native_options, json_one_line, r2_script, quiet)
+			: emit_pinvokes (meta, json_one_line, r2_script, quiet);
 		r2unity_free_metadata (meta);
 		r_unref (buf);
 		free_symbol_overrides (&symbol_overrides);

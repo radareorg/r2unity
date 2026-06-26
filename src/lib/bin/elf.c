@@ -282,7 +282,9 @@ bool r2unity_find_method_pointers_elf(R2UnityMetadata *meta, const char *path, c
 	};
 	size_t section_count = 0;
 	R2UnityNativeSection *sections = elf_sections (&e, &section_count);
-	bool ok = r2unity_native_run_view (meta, &view, sections, section_count, options, result);
+	view.sections = sections;
+	view.section_count = section_count;
+	bool ok = r2unity_native_resolve (meta, &view, NULL, options, result);
 	R_FREE (sections);
 	elf_free (&e);
 	return ok;

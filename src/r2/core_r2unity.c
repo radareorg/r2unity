@@ -228,7 +228,7 @@ static void apply_native_tables(RCore *core, const R2UnityNativeResult *result, 
 			snprintf (flag, sizeof (flag), "sym.r2unity.%s.%" PFMT64u, name, j);
 			native_flag (core, print, flag, addr, 1);
 			if (print) {
-				r_cons_printf (core->cons, "af+ 0x%" PFMT64x " %s\n", addr, flag);
+				r_cons_printf (core->cons, "'@0x%08" PFMT64x "'af+ $$ %s\n", addr, flag);
 			} else if (core->anal && !r_anal_get_function_at (core->anal, addr)) {
 				r_anal_create_function (core->anal, flag, addr, R_ANAL_FCN_TYPE_FCN, NULL);
 			}
@@ -433,6 +433,12 @@ static bool find_method_pointers(RCore *core, R2UnityMetadata *meta, const char 
 	}
 	native_result_to_config (core, result);
 	return ok;
+}
+
+static bool enrich_reverse_pinvokes_native(RCore *core, R2UnityMetadata *meta, const char *path, R2UnityInterop **items, size_t *count) {
+	R2UnityNativeOptions opts = { 0 };
+	native_options_from_core (core, &opts);
+	return path && *path && r2unity_enrich_reverse_pinvokes_native (meta, path, &opts, items, count);
 }
 
 static int type_definition_for_type_index(const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index) {
@@ -1047,6 +1053,35 @@ static const char *interop_kind_label(uint8_t kind) {
 	}
 }
 
+static void pj_interop_wrapper(PJ *pj, const R2UnityInterop *it) {
+	if (it->wrapper_va) {
+		pj_kn (pj, "wrapper_va", it->wrapper_va);
+	}
+	if (it->wrapper_index != UINT32_MAX) {
+		pj_kn (pj, "wrapper_index", it->wrapper_index);
+	}
+}
+
+static char *interop_flag_name(const char *prefix, const R2UnityInterop *it) {
+	char *name = it->image_name && *it->image_name
+		? r_str_newf ("%s.%s.%s", prefix, it->image_name, it->name)
+		: r_str_newf ("%s.%s", prefix, it->name);
+	if (name) {
+		r_name_filter (name, -1);
+		if (!r_name_check (name)) {
+			R_FREE (name);
+		}
+	}
+	return name;
+}
+
+static void print_interop_wrapper_flag(RCore *core, const char *name, ut64 wrapper_va) {
+	if (wrapper_va && name) {
+		r_cons_printf (core->cons, "'@0x%" PFMT64x "'f %s\n", wrapper_va, name);
+		r_cons_printf (core->cons, "'@0x%" PFMT64x "'af+ $$ %s\n", wrapper_va, name);
+	}
+}
+
 static int cmd_interop(RCore *core, bool reverse, char mode) {
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
@@ -1057,6 +1092,12 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 	R2UnityInterop *items = reverse
 		? r2unity_enumerate_reverse_pinvokes (meta, &n)
 		: r2unity_enumerate_pinvokes (meta, &n);
+	if (reverse) {
+		const char *lib = resolve_library_path (core);
+		if (lib) {
+			enrich_reverse_pinvokes_native (core, meta, lib, &items, &n);
+		}
+	}
 	if (items && n > 1) {
 		qsort (items, n, sizeof (R2UnityInterop), interop_cmp);
 	}
@@ -1087,6 +1128,7 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 			pj_kn (pj, "flags", (ut64)it->flags);
 			pj_kn (pj, "iflags", (ut64)it->iflags);
 			pj_kn (pj, "confidence", (ut64)it->confidence);
+			pj_interop_wrapper (pj, it);
 			if (reverse) {
 				pj_ks (pj, "attribute", interop_kind_label (it->kind));
 			} else {
@@ -1104,27 +1146,35 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 			pj_end (pj);
 		} else if (mode == '*') {
 			if (it->name) {
-				char flag_buf[1024];
 				const char *prefix = reverse? "sym.unity.reverse": "sym.unity";
-				if (it->image_name && *it->image_name) {
-					snprintf (flag_buf, sizeof (flag_buf), "%s.%s.%s", prefix, it->image_name, it->name);
-				} else {
-					snprintf (flag_buf, sizeof (flag_buf), "%s.%s", prefix, it->name);
+				char *name = interop_flag_name (prefix, it);
+				if (!name) {
+					free (attrs);
+					continue;
 				}
-				r_name_filter (flag_buf, -1);
 				if (reverse) {
-					r_cons_printf (core->cons, "# ReversePInvoke %s [%s]\n", flag_buf, interop_kind_label (it->kind));
+					r_cons_printf (core->cons, "# ReversePInvoke %s [%s]\n", name, interop_kind_label (it->kind));
 				} else if (it->dll_name) {
-					r_cons_printf (core->cons, "# PInvoke %s -> %s!%s\n", flag_buf, it->dll_name, it->entry_name? it->entry_name: it->name);
+					r_cons_printf (core->cons, "# PInvoke %s -> %s!%s\n", name, it->dll_name, it->entry_name? it->entry_name: it->name);
 				} else {
-					r_cons_printf (core->cons, "# PInvoke %s -> <unresolved>\n", flag_buf);
+					r_cons_printf (core->cons, "# PInvoke %s -> <unresolved>\n", name);
 				}
+				if (reverse) {
+					print_interop_wrapper_flag (core, name, it->wrapper_va);
+				}
+				free (name);
 			}
 		} else {
 			if (reverse) {
 				r_cons_printf (core->cons, "%s\t%s\t%s\t%s\t%u\n", it->image_name? it->image_name: "", it->name? it->name: "", interop_kind_label (it->kind), *attrs? attrs: "-", (unsigned)it->confidence);
 			} else {
-				r_cons_printf (core->cons, "%s\t%s\t%s\t%s\t%s\t%u\n", it->image_name? it->image_name: "", it->name? it->name: "", it->dll_name? it->dll_name: "<unresolved>", it->entry_name? it->entry_name: "<default>", *attrs? attrs: "-", (unsigned)it->confidence);
+				r_cons_printf (core->cons, "%s\t%s\t%s\t%s\t%s\t%u\n",
+					it->image_name? it->image_name: "",
+					it->name? it->name: "",
+					it->dll_name? it->dll_name: "<unresolved>",
+					it->entry_name? it->entry_name: "<default>",
+					*attrs? attrs: "-",
+					(unsigned)it->confidence);
 			}
 		}
 		free (attrs);
