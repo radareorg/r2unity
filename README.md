@@ -24,6 +24,8 @@ IL2CPP binary, and exposes managed metadata for reverse engineering.
   `global-metadata.dat` inspection.
 - Recognizes Unity SerializedFile v22 asset databases and exposes their
   headers, object ranges, names, symbols, classes, dependencies, and resources.
+- Recognizes BGDatabase v6 repositories and whole-database saves, including
+  addon payloads, table regions, fields, symbols, and validated UTF-8 values.
 
 ## Build
 
@@ -50,7 +52,7 @@ r2pm -ci r2unity
 ```
 
 `make` builds the CLI. `make plugin` builds `core_r2unity` and `bin_r2unity`.
-`make user-install` installs both the CLI and plugins for the current user.
+`make user-install` installs the CLI and plugins for the current user.
 Meson builds the CLI by default, matching `make`. Use `-Dplugins=enabled` to
 build the radare2 plugins too, or `-Dr2_plugindir=/path/to/plugins` to override
 the plugin install directory.
@@ -112,6 +114,16 @@ rabin2 -U sharedassets10.assets
 rabin2 -xU sharedassets10.assets
 ```
 
+BGDatabase repositories and saves produced by `BGRepo.I.Save()` are handled by
+the same `r2unity` bin plugin:
+
+```sh
+rabin2 -I SaveFile.dat
+rabin2 -S SaveFile.dat
+rabin2 -s SaveFile.dat
+rabin2 -z SaveFile.dat
+```
+
 ## Current Limits
 
 - v24.0 metadata, v36/v37 metadata, and WebAssembly are not supported.
@@ -127,5 +139,8 @@ rabin2 -xU sharedassets10.assets
   implemented.
 - Streamed `.resS` and `.resource` ranges are reported from their owner object,
   but generic radare2 resource extraction cannot yet read bytes from a sidecar.
+- BGDatabase support currently targets the structurally validated v6 layout.
+  It exposes unknown proprietary field payloads as table sections until more
+  field types and format versions are recovered from additional fixtures.
 
 Deep technical notes live in `doc/`.

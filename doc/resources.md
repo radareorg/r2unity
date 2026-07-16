@@ -54,6 +54,7 @@ Consequently:
 | Addressables `catalog.bin` / `catalog.json` | Key-to-location and dependency mapping | No; it points at bundles and providers | None |
 | Addressables `catalog.hash` | Catalog version/update fingerprint | No | None |
 | literal `*.res` | Usually a compiled Windows resource file, or an application-specific file | Yes for Win32 `.res` | Linked PE resources only; no standalone parser |
+| BGDatabase `*.bytes`, `*.sav`, or `*.dat` | Third-party BansheeGz database or saved repository | Yes | r2unity BGDatabase v6 baseline |
 | arbitrary `*.dat` | Application-specific data, cache, save, or one of the known `.dat` formats above | Unknown | Format-dependent |
 
 ## 2. Unity's build-content graph
@@ -604,6 +605,36 @@ any bytes under `Application.persistentDataPath`, including:
 
 The `.dat` extension does not distinguish any of these.
 
+### 9.5 BGDatabase repositories and saves
+
+BGDatabase is a third-party managed database used by some Unity games. Its
+binary format is not a Unity SerializedFile. The normal shipped repository is
+named `bansheegz_database.bytes`, but applications can store complete
+repositories or Save/Load snapshots under `.sav`, `.dat`, or arbitrary names.
+
+The `r2unity` bin plugin implements a conservative format-v6 baseline. It
+requires a valid length-prefixed `BansheeGz.BGDatabase.*` addon descriptor and
+the exact number of declared canonical table blocks before accepting a file.
+For the `SaveFile.dat` reference fixture it recovers:
+
+- repository format version 6 and the 16-byte repository identifier
+- one `BGAddonSaveLoad` descriptor with a 360-byte configuration payload
+- three columnar table regions with 6, 23, and 10 fields
+- 50 validated length-prefixed UTF-8 strings
+- header/addon/schema/table sections, symbols, classes, libraries, and fields
+
+Unknown proprietary field encodings remain inside their bounded table region.
+Ordinary database cells are exposed as fields or strings, not as
+`RBinResource` entries. Future versions should add a versioned BGDatabase field
+type registry and only expose actual byte-array/document cells as resources.
+
+The relevant upstream descriptions are the
+[binary repository setup](https://www.bansheegz.com/BGDatabase/Setup/) and
+[Save/Load addon](https://www.bansheegz.com/BGDatabase/Addons/SaveLoad/)
+documentation. They describe the public API and deployment model, but not the
+binary wire format; the layout above is therefore based on bounded structural
+recovery from the reference fixture.
+
 ## 10. Saved state, PlayerPrefs, and StreamingAssets
 
 ### 10.1 `Application.persistentDataPath`
@@ -700,6 +731,7 @@ address / label
 | `FSB5` | FMOD sound bank, sometimes inside a Unity `.resource` sidecar |
 | valid IL2CPP record area plus `*.dll-resources.dat` path/name | IL2CPP manifest-resource pack |
 | plausible versioned header and Unity version string, but no textual magic | Unity SerializedFile |
+| little-endian version 6, repository ID, and bounded `BansheeGz.BGDatabase.*` addon descriptors | BGDatabase v6 repository/save |
 | `PK\x03\x04`, gzip, SQLite, JSON, XML, etc. | Inner/common format; especially relevant for custom saves and StreamingAssets |
 | no magic and high entropy | Possibly compressed, encrypted, packed, or simply raw media data |
 
@@ -790,6 +822,11 @@ Companion discovery currently locates:
 Companion discovery does not yet enumerate `Managed/Resources`, loose
 SerializedFiles, UnityFS archives, sidecars, or Addressables content. A loose
 v22 SerializedFile can nevertheless be opened directly by r2 or rabin2.
+
+The same `bin_r2unity` plugin recognizes the strongly validated BGDatabase v6
+repository layout described in section 9.5. The dedicated BGDatabase parser
+keeps its weak-magic detection separate from the Unity SerializedFile parser
+while sharing one radare2 bin plugin entry point.
 
 The existing documentation correctly states that Unity asset, scene, prefab,
 and AssetBundle data is not stored in `global-metadata.dat`.

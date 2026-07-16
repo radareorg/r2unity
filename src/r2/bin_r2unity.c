@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <r_bin.h>
 #include <r_lib.h>
+#include "../lib/bgdatabase.h"
 #include "../lib/lib.h"
 #include "../lib/serialized_file.h"
 
@@ -27,12 +28,14 @@
 typedef enum {
 	R2UNITY_BIN_METADATA,
 	R2UNITY_BIN_SERIALIZED_FILE,
+	R2UNITY_BIN_BGDATABASE,
 } R2UnityBinKind;
 
 typedef struct {
 	R2UnityBinKind kind;
 	R2UnityMetadata *meta;
 	R2UnitySerializedFile *sf;
+	R2UnityBGDatabase *bgdb;
 	RBuffer *buf;
 	Sdb *kv;
 	ut8 *strings;
@@ -42,6 +45,34 @@ typedef struct {
 static R2UnityBinObj *get_obj(RBinFile *bf) {
 	RBinObject *o = bf? bf->bo: NULL;
 	return o? (R2UnityBinObj *)o->bin_obj: NULL;
+}
+
+static char *bgdatabase_addon_name(const char *type) {
+	const char *end = strchr (type, ',');
+	if (!end) {
+		end = type + strlen (type);
+	}
+	const char *start = end;
+	while (start > type && start[-1] != '.') {
+		start--;
+	}
+	return r_str_ndup (start, (int)(end - start));
+}
+
+static char *bgdatabase_addon_assembly(const char *type) {
+	const char *comma = strchr (type, ',');
+	if (!comma) {
+		return strdup (type);
+	}
+	comma++;
+	while (*comma == ' ') {
+		comma++;
+	}
+	const char *end = strchr (comma, ',');
+	if (!end) {
+		end = comma + strlen (comma);
+	}
+	return r_str_ndup (comma, (int)(end - comma));
 }
 
 static char *get_string(R2UnityBinObj *obj, uint32_t index) {
@@ -72,7 +103,8 @@ static bool check(RBinFile *bf, RBuffer *b) {
 		&& valid_wire_version ((int32_t)r_read_le32 (preamble + 4))) {
 		return true;
 	}
-	return r2unity_serialized_file_check (b);
+	return r2unity_serialized_file_check (b)
+		|| r2unity_bgdatabase_check (b);
 }
 
 static void fill_metadata_sdb(R2UnityBinObj *obj) {
@@ -163,6 +195,41 @@ static void fill_serialized_file_sdb(R2UnityBinObj *obj) {
 	}
 }
 
+static void fill_bgdatabase_sdb(R2UnityBinObj *obj) {
+	Sdb *kv = obj->kv;
+	R2UnityBGDatabase *db = obj->bgdb;
+	sdb_set (kv, "format", "bgdatabase", 0);
+	sdb_num_set (kv, "version", db->version, 0);
+	char *id = r2unity_bgdatabase_id_string (db->repository_id);
+	sdb_set (kv, "repository.id", id, 0);
+	free (id);
+	sdb_num_set (kv, "header.value", db->header_value, 0);
+	sdb_num_set (kv, "body.offset", db->body_offset, 0);
+	sdb_num_set (kv, "counts.addons", db->addon_count, 0);
+	sdb_num_set (kv, "counts.tables", db->table_count, 0);
+	sdb_num_set (kv, "counts.strings", db->string_count, 0);
+	for (size_t i = 0; i < db->addon_count; i++) {
+		R2UnityBGDatabaseAddon *addon = &db->addons[i];
+		char key[128];
+		snprintf (key, sizeof (key), "addons.%zu.type", i);
+		sdb_set (kv, key, addon->type, 0);
+		snprintf (key, sizeof (key), "addons.%zu.payload.offset", i);
+		sdb_num_set (kv, key, addon->payload_offset, 0);
+		snprintf (key, sizeof (key), "addons.%zu.payload.size", i);
+		sdb_num_set (kv, key, addon->payload_size, 0);
+	}
+	for (size_t i = 0; i < db->table_count; i++) {
+		R2UnityBGDatabaseTable *table = &db->tables[i];
+		char key[128];
+		snprintf (key, sizeof (key), "tables.%zu.offset", i);
+		sdb_num_set (kv, key, table->offset, 0);
+		snprintf (key, sizeof (key), "tables.%zu.size", i);
+		sdb_num_set (kv, key, table->size, 0);
+		snprintf (key, sizeof (key), "tables.%zu.fields", i);
+		sdb_num_set (kv, key, table->field_count, 0);
+	}
+}
+
 static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	(void)loadaddr;
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && buf, false);
@@ -182,8 +249,12 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	} else {
 		obj->kind = R2UNITY_BIN_SERIALIZED_FILE;
 		obj->sf = r2unity_serialized_file_parse (obj->buf);
+		if (!obj->sf) {
+			obj->kind = R2UNITY_BIN_BGDATABASE;
+			obj->bgdb = r2unity_bgdatabase_parse (obj->buf);
+		}
 	}
-	if (!obj->meta && !obj->sf) {
+	if (!obj->meta && !obj->sf && !obj->bgdb) {
 		r_unref (obj->buf);
 		free (obj);
 		return false;
@@ -204,6 +275,7 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	if (!obj->kv) {
 		r2unity_free_metadata (obj->meta);
 		r2unity_serialized_file_free (obj->sf);
+		r2unity_bgdatabase_free (obj->bgdb);
 		r_unref (obj->buf);
 		R_FREE (obj->strings);
 		free (obj);
@@ -211,8 +283,10 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	}
 	if (obj->kind == R2UNITY_BIN_METADATA) {
 		fill_metadata_sdb (obj);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		fill_serialized_file_sdb (obj);
+	} else {
+		fill_bgdatabase_sdb (obj);
 	}
 	bf->bo->bin_obj = obj;
 	return true;
@@ -225,6 +299,7 @@ static void destroy(RBinFile *bf) {
 	}
 	r2unity_free_metadata (obj->meta);
 	r2unity_serialized_file_free (obj->sf);
+	r2unity_bgdatabase_free (obj->bgdb);
 	r_unref (obj->buf);
 	R_FREE (obj->strings);
 	free (obj);
@@ -260,7 +335,7 @@ static RBinInfo *info(RBinFile *bf) {
 		ret->bits = 32;
 		ret->big_endian = 0;
 		ret->lang = "csharp";
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		ret->type = r_str_newf ("Unity SerializedFile v%u (%s)", obj->sf->version, obj->sf->unity_version);
 		ret->bclass = strdup ("Unity SerializedFile");
 		ret->rclass = strdup ("unity");
@@ -269,6 +344,16 @@ static RBinInfo *info(RBinFile *bf) {
 		ret->subsystem = strdup ("assets");
 		ret->bits = 64;
 		ret->big_endian = obj->sf->big_endian;
+	} else {
+		ret->type = r_str_newf ("BGDatabase repository v%u", obj->bgdb->version);
+		ret->bclass = strdup ("BGDatabase repository");
+		ret->rclass = strdup ("bgdatabase");
+		ret->machine = strdup ("BansheeGz BGDatabase");
+		ret->os = strdup ("unity");
+		ret->subsystem = strdup ("save/database");
+		ret->bits = 32;
+		ret->big_endian = false;
+		ret->lang = "csharp";
 	}
 	ret->has_va = false;
 	ret->has_lit = true;
@@ -287,6 +372,14 @@ static void init_section(RBinSection *sec, const char *name, ut64 off, ut64 size
 	sec->has_strings = has_strings;
 	sec->is_data = true;
 	sec->add = true;
+}
+
+static void init_bgdatabase_section(RBinSection *sec, const char *name,
+		ut64 off, ut64 size, bool has_strings) {
+	init_section (sec, name, off, size, has_strings);
+	if (size >= sizeof (ut32)) {
+		sec->format = r_str_newf ("Cd 4[%"PFMT64u"]", size / sizeof (ut32));
+	}
 }
 
 static char *serialized_object_label(const R2UnitySerializedObject *asset, const char *prefix) {
@@ -312,6 +405,14 @@ static void append_section(RVecRBinSection *ret, const char *name, ut64 off, ut6
 	}
 }
 
+static void append_bgdatabase_section(RVecRBinSection *ret, const char *name,
+		ut64 off, ut64 size, bool has_strings) {
+	RBinSection *sec = RVecRBinSection_emplace_back (ret);
+	if (sec) {
+		init_bgdatabase_section (sec, name, off, size, has_strings);
+	}
+}
+
 static bool sections_vec(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
@@ -333,6 +434,32 @@ static bool sections_vec(RBinFile *bf) {
 			char *name = serialized_object_label (asset, "unity.object");
 			append_section (ret, name, asset->offset, asset->size,
 				asset->class_id == 49 || asset->name_size > 0);
+			free (name);
+		}
+		return true;
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		R2UnityBGDatabase *db = obj->bgdb;
+		append_bgdatabase_section (ret, "bgdb.header", 0,
+			R2UNITY_BGDB_HEADER_SIZE, false);
+		for (size_t i = 0; i < db->addon_count; i++) {
+			R2UnityBGDatabaseAddon *addon = &db->addons[i];
+			char *addon_name = bgdatabase_addon_name (addon->type);
+			char *name = r_str_newf ("bgdb.addon.%s", addon_name);
+			append_bgdatabase_section (ret, name, addon->offset,
+				addon->payload_offset + addon->payload_size - addon->offset, true);
+			free (name);
+			free (addon_name);
+		}
+		ut64 schema_end = db->table_count? db->tables[0].offset: db->size;
+		if (schema_end > db->body_offset) {
+			append_bgdatabase_section (ret, "bgdb.schema", db->body_offset,
+				schema_end - db->body_offset, true);
+		}
+		for (size_t i = 0; i < db->table_count; i++) {
+			char *name = r_str_newf ("bgdb.table.%zu", i);
+			append_bgdatabase_section (ret, name, db->tables[i].offset,
+				db->tables[i].size, true);
 			free (name);
 		}
 		return true;
@@ -374,6 +501,13 @@ static RBinSection *new_section(const char *name, ut64 off, ut64 size, bool has_
 	return sec;
 }
 
+static RBinSection *new_bgdatabase_section(const char *name, ut64 off,
+		ut64 size, bool has_strings) {
+	RBinSection *sec = R_NEW0 (RBinSection);
+	init_bgdatabase_section (sec, name, off, size, has_strings);
+	return sec;
+}
+
 static RList *sections(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
@@ -394,6 +528,32 @@ static RList *sections(RBinFile *bf) {
 			char *name = serialized_object_label (asset, "unity.object");
 			r_list_append (ret, new_section (name, asset->offset, asset->size,
 				asset->class_id == 49 || asset->name_size > 0));
+			free (name);
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		R2UnityBGDatabase *db = obj->bgdb;
+		r_list_append (ret, new_bgdatabase_section ("bgdb.header", 0,
+			R2UNITY_BGDB_HEADER_SIZE, false));
+		for (size_t i = 0; i < db->addon_count; i++) {
+			R2UnityBGDatabaseAddon *addon = &db->addons[i];
+			char *addon_name = bgdatabase_addon_name (addon->type);
+			char *name = r_str_newf ("bgdb.addon.%s", addon_name);
+			r_list_append (ret, new_bgdatabase_section (name, addon->offset,
+				addon->payload_offset + addon->payload_size - addon->offset, true));
+			free (name);
+			free (addon_name);
+		}
+		ut64 schema_end = db->table_count? db->tables[0].offset: db->size;
+		if (schema_end > db->body_offset) {
+			r_list_append (ret, new_bgdatabase_section ("bgdb.schema", db->body_offset,
+				schema_end - db->body_offset, true));
+		}
+		for (size_t i = 0; i < db->table_count; i++) {
+			char *name = r_str_newf ("bgdb.table.%zu", i);
+			r_list_append (ret, new_bgdatabase_section (name, db->tables[i].offset,
+				db->tables[i].size, true));
 			free (name);
 		}
 		return ret;
@@ -582,6 +742,36 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 		}
 		return true;
 	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		R2UnityBGDatabase *db = obj->bgdb;
+		append_symbol (ret, new_symbol ("bgdb.repository", 0,
+			db->body_offset, R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY,
+			NULL, ordinal++));
+		for (size_t i = 0; i < db->addon_count; i++) {
+			R2UnityBGDatabaseAddon *addon = &db->addons[i];
+			char *addon_name = bgdatabase_addon_name (addon->type);
+			char *name = r_str_newf ("bgdb.addon.%s", addon_name);
+			append_symbol (ret, new_symbol (name, addon->payload_offset,
+				addon->payload_size, R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY,
+				NULL, ordinal++));
+			free (name);
+			free (addon_name);
+		}
+		for (size_t i = 0; i < db->table_count; i++) {
+			R2UnityBGDatabaseTable *table = &db->tables[i];
+			char *classname = r_str_newf ("BGDatabase.Table_%zu", i);
+			char *name = r_str_newf ("bgdb.table.%zu", i);
+			append_symbol (ret, new_symbol (name, table->offset, table->size,
+				R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY, classname, ordinal++));
+			free (name);
+			name = r_str_newf ("bgdb.table.%zu.name_field", i);
+			append_symbol (ret, new_symbol (name, table->name_field_offset, 30,
+				R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY, classname, ordinal++));
+			free (name);
+			free (classname);
+		}
+		return true;
+	}
 	R2UnityMetadata *meta = obj->meta;
 
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
@@ -720,6 +910,18 @@ static RList *classes(RBinFile *bf) {
 				klass->lang = R_BIN_LANG_NONE;
 				r_list_append (ret, klass);
 			}
+			free (name);
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		for (size_t i = 0; i < obj->bgdb->table_count; i++) {
+			char *name = r_str_newf ("BGDatabase.Table_%zu", i);
+			RBinClass *klass = r_bin_class_new (name, NULL, R_BIN_ATTR_NONE);
+			klass->index = (int)i;
+			klass->addr = obj->bgdb->tables[i].offset;
+			klass->lang = R_BIN_LANG_NONE;
+			r_list_append (ret, klass);
 			free (name);
 		}
 		return ret;
@@ -891,6 +1093,17 @@ static void add_serialized_strings(R2UnityBinObj *obj, R2UnityStringSink *ret, u
 	}
 }
 
+static void add_bgdatabase_strings(R2UnityBinObj *obj, R2UnityStringSink *ret,
+		ut32 *ordinal) {
+	for (size_t i = 0; i < obj->bgdb->string_count; i++) {
+		R2UnityBGDatabaseString *string = &obj->bgdb->strings[i];
+		if (string->size < R_BIN_SIZEOF_STRINGS) {
+			append_bin_string (ret, strdup (string->value), string->offset,
+				string->size, (*ordinal)++);
+		}
+	}
+}
+
 #if R2UNITY_BIN_STRINGS_VEC_ABI
 static RVecRBinString *strings(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
@@ -903,8 +1116,10 @@ static RVecRBinString *strings(RBinFile *bf) {
 	if (obj->kind == R2UNITY_BIN_METADATA) {
 		add_metadata_strings (obj, ret, &ordinal);
 		add_literal_strings (obj, ret, &ordinal);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		add_serialized_strings (obj, ret, &ordinal);
+	} else {
+		add_bgdatabase_strings (obj, ret, &ordinal);
 	}
 	return ret;
 }
@@ -917,8 +1132,10 @@ static RList *strings(RBinFile *bf) {
 	if (obj->kind == R2UNITY_BIN_METADATA) {
 		add_metadata_strings (obj, ret, &ordinal);
 		add_literal_strings (obj, ret, &ordinal);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		add_serialized_strings (obj, ret, &ordinal);
+	} else {
+		add_bgdatabase_strings (obj, ret, &ordinal);
 	}
 	return ret;
 }
@@ -947,7 +1164,7 @@ static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
 static bool imports_fill(RBinFile *bf, R2UnityImportSink *ret) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, false);
-	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+	if (obj->kind != R2UNITY_BIN_METADATA) {
 		return true;
 	}
 	size_t count = 0;
@@ -991,6 +1208,13 @@ static RList *libs(RBinFile *bf) {
 	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		for (size_t i = 0; i < obj->sf->external_count; i++) {
 			r_list_append (ret, strdup (obj->sf->externals[i].path));
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		for (size_t i = 0; i < obj->bgdb->addon_count; i++) {
+			r_list_append (ret,
+				bgdatabase_addon_assembly (obj->bgdb->addons[i].type));
 		}
 		return ret;
 	}
@@ -1040,6 +1264,43 @@ static RList *fields(RBinFile *bf) {
 			name = r_str_newf ("serialized.objects.%zu.type_index", i);
 			r_list_append (ret, r_bin_field_new (asset->table_offset + 20,
 				asset->table_offset + 20, asset->type_index, 4, name, NULL, "i", false));
+			free (name);
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		R2UnityBGDatabase *db = obj->bgdb;
+		r_list_append (ret, r_bin_field_new (0, 0, db->version, 4,
+			"bgdb.version", NULL, "i", false));
+		r_list_append (ret, r_bin_field_new (4, 4,
+			r_read_le64 (db->repository_id), 8,
+			"bgdb.repository_id.low", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (12, 12,
+			r_read_le64 (db->repository_id + 8), 8,
+			"bgdb.repository_id.high", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (20, 20, db->header_value, 4,
+			"bgdb.header_value", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (24, 24, db->addon_count, 4,
+			"bgdb.addon_count", NULL, "i", false));
+		for (size_t i = 0; i < db->addon_count; i++) {
+			R2UnityBGDatabaseAddon *addon = &db->addons[i];
+			char *name = r_str_newf ("bgdb.addons.%zu.type_size", i);
+			r_list_append (ret, r_bin_field_new (addon->offset, addon->offset,
+				addon->type_size, 4, name, NULL, "i", false));
+			free (name);
+			name = r_str_newf ("bgdb.addons.%zu.payload_size", i);
+			r_list_append (ret, r_bin_field_new (addon->payload_size_offset,
+				addon->payload_size_offset, addon->payload_size, 4,
+				name, NULL, "x", false));
+			free (name);
+		}
+		r_list_append (ret, r_bin_field_new (db->body_offset, db->body_offset,
+			db->table_count, 4, "bgdb.table_count", NULL, "i", false));
+		for (size_t i = 0; i < db->table_count; i++) {
+			R2UnityBGDatabaseTable *table = &db->tables[i];
+			char *name = r_str_newf ("bgdb.tables.%zu.field_count", i);
+			r_list_append (ret, r_bin_field_new (table->offset, table->offset,
+				table->field_count, 4, name, NULL, "i", false));
 			free (name);
 		}
 		return ret;
@@ -1109,6 +1370,33 @@ static char *header(RBinFile *bf, int mode) {
 				r_strbuf_appendf (sb, "              stream=%s offset=0x%08"PFMT64x" size=0x%08"PFMT64x"\n",
 					asset->stream_path, asset->stream_offset, asset->stream_size);
 			}
+		}
+		return r_strbuf_drain (sb);
+	}
+	if (obj->kind == R2UNITY_BIN_BGDATABASE) {
+		R2UnityBGDatabase *db = obj->bgdb;
+		char *id = r2unity_bgdatabase_id_string (db->repository_id);
+		r_strbuf_appendf (sb, "BGDatabase repository v%u\n", db->version);
+		r_strbuf_appendf (sb, "0x00000004  RepositoryId    %s\n", id);
+		r_strbuf_appendf (sb, "0x00000014  HeaderValue     %u\n",
+			db->header_value);
+		r_strbuf_appendf (sb, "0x00000018  Addons          %zu\n",
+			db->addon_count);
+		free (id);
+		for (size_t i = 0; i < db->addon_count; i++) {
+			R2UnityBGDatabaseAddon *addon = &db->addons[i];
+			r_strbuf_appendf (sb,
+				"0x%08"PFMT64x"  addon=%s payload=0x%08"PFMT64x"+0x%08"PFMT64x"\n",
+				addon->offset, addon->type, addon->payload_offset,
+				addon->payload_size);
+		}
+		r_strbuf_appendf (sb, "0x%08"PFMT64x"  Tables          %zu\n",
+			db->body_offset, db->table_count);
+		for (size_t i = 0; i < db->table_count; i++) {
+			R2UnityBGDatabaseTable *table = &db->tables[i];
+			r_strbuf_appendf (sb,
+				"0x%08"PFMT64x"  table=%zu fields=%u size=0x%08"PFMT64x"\n",
+				table->offset, i, table->field_count, table->size);
 		}
 		return r_strbuf_drain (sb);
 	}
@@ -1201,7 +1489,7 @@ static bool load_resources(RBinFile *bf) {
 RBinPlugin r_bin_plugin_r2unity = {
 	.meta = {
 		.name = "r2unity",
-		.desc = "Unity IL2CPP metadata and SerializedFiles",
+		.desc = "Unity IL2CPP metadata, SerializedFiles and BGDatabase saves",
 		.author = "pancake",
 		.license = "MIT",
 	},
