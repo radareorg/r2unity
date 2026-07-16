@@ -7,6 +7,7 @@
 #include <r_lib.h>
 #include "../lib/bgdatabase.h"
 #include "../lib/lib.h"
+#include "../lib/resource_pack.h"
 #include "../lib/serialized_file.h"
 
 #if defined(R_LIB_ABIVERSION) && !defined(R2_ABIVERSION)
@@ -29,6 +30,7 @@ typedef enum {
 	R2UNITY_BIN_METADATA,
 	R2UNITY_BIN_SERIALIZED_FILE,
 	R2UNITY_BIN_BGDATABASE,
+	R2UNITY_BIN_RESOURCE_PACK,
 } R2UnityBinKind;
 
 typedef struct {
@@ -36,6 +38,8 @@ typedef struct {
 	R2UnityMetadata *meta;
 	R2UnitySerializedFile *sf;
 	R2UnityBGDatabase *bgdb;
+	R2UnityResourcePack *resource_pack;
+	char *resource_origin;
 	RBuffer *buf;
 	Sdb *kv;
 	ut8 *strings;
@@ -45,6 +49,26 @@ typedef struct {
 static R2UnityBinObj *get_obj(RBinFile *bf) {
 	RBinObject *o = bf? bf->bo: NULL;
 	return o? (R2UnityBinObj *)o->bin_obj: NULL;
+}
+
+static bool resource_pack_filename(const char *path) {
+	return path && r_str_endswith (r_file_basename (path), "-resources.dat");
+}
+
+static char *resource_pack_origin(const char *path) {
+	const char *base = path? r_file_basename (path): "IL2CPP";
+	char *origin = strdup (base);
+	if (!origin) {
+		return NULL;
+	}
+	const char *suffix = "-resources.dat";
+	size_t length = strlen (origin);
+	size_t suffix_length = strlen (suffix);
+	if (length > suffix_length
+		&& !strcmp (origin + length - suffix_length, suffix)) {
+		origin[length - suffix_length] = 0;
+	}
+	return origin;
 }
 
 static char *bgdatabase_addon_name(const char *type) {
@@ -95,12 +119,15 @@ static bool valid_wire_version(int32_t version) {
 }
 
 static bool check(RBinFile *bf, RBuffer *b) {
-	(void)bf;
 	R_RETURN_VAL_IF_FAIL (b, false);
 	ut8 preamble[8];
 	if (r_buf_read_at (b, 0, preamble, sizeof (preamble)) == (st64)sizeof (preamble)
 		&& r_read_le32 (preamble) == IL2CPP_MAGIC
 		&& valid_wire_version ((int32_t)r_read_le32 (preamble + 4))) {
+		return true;
+	}
+	if (resource_pack_filename (bf? bf->file: NULL)
+		&& r2unity_resource_pack_check (b)) {
 		return true;
 	}
 	return r2unity_serialized_file_check (b)
@@ -230,6 +257,26 @@ static void fill_bgdatabase_sdb(R2UnityBinObj *obj) {
 	}
 }
 
+static void fill_resource_pack_sdb(R2UnityBinObj *obj) {
+	Sdb *kv = obj->kv;
+	R2UnityResourcePack *pack = obj->resource_pack;
+	sdb_set (kv, "format", "il2cpp_resource_pack", 0);
+	sdb_set (kv, "assembly", obj->resource_origin, 0);
+	sdb_num_set (kv, "records_size", pack->records_size, 0);
+	sdb_num_set (kv, "payload.offset", pack->payload_offset, 0);
+	sdb_num_set (kv, "counts.resources", pack->entry_count, 0);
+	for (size_t i = 0; i < pack->entry_count; i++) {
+		R2UnityResourcePackEntry *entry = &pack->entries[i];
+		char key[128];
+		snprintf (key, sizeof (key), "resources.%zu.name", i);
+		sdb_set (kv, key, entry->name, 0);
+		snprintf (key, sizeof (key), "resources.%zu.offset", i);
+		sdb_num_set (kv, key, entry->payload_offset, 0);
+		snprintf (key, sizeof (key), "resources.%zu.payload_size", i);
+		sdb_num_set (kv, key, entry->payload_size, 0);
+	}
+}
+
 static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	(void)loadaddr;
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && buf, false);
@@ -253,8 +300,21 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 			obj->kind = R2UNITY_BIN_BGDATABASE;
 			obj->bgdb = r2unity_bgdatabase_parse (obj->buf);
 		}
+		if (!obj->sf && !obj->bgdb) {
+			obj->kind = R2UNITY_BIN_RESOURCE_PACK;
+			obj->resource_pack = r2unity_resource_pack_parse (obj->buf);
+			if (obj->resource_pack) {
+				obj->resource_origin = resource_pack_origin (bf->file);
+			}
+		}
 	}
-	if (!obj->meta && !obj->sf && !obj->bgdb) {
+	if ((!obj->meta && !obj->sf && !obj->bgdb && !obj->resource_pack)
+		|| (obj->resource_pack && !obj->resource_origin)) {
+		r2unity_free_metadata (obj->meta);
+		r2unity_serialized_file_free (obj->sf);
+		r2unity_bgdatabase_free (obj->bgdb);
+		r2unity_resource_pack_free (obj->resource_pack);
+		free (obj->resource_origin);
 		r_unref (obj->buf);
 		free (obj);
 		return false;
@@ -276,6 +336,8 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 		r2unity_free_metadata (obj->meta);
 		r2unity_serialized_file_free (obj->sf);
 		r2unity_bgdatabase_free (obj->bgdb);
+		r2unity_resource_pack_free (obj->resource_pack);
+		free (obj->resource_origin);
 		r_unref (obj->buf);
 		R_FREE (obj->strings);
 		free (obj);
@@ -285,8 +347,10 @@ static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 		fill_metadata_sdb (obj);
 	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		fill_serialized_file_sdb (obj);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_BGDATABASE) {
 		fill_bgdatabase_sdb (obj);
+	} else {
+		fill_resource_pack_sdb (obj);
 	}
 	bf->bo->bin_obj = obj;
 	return true;
@@ -300,6 +364,8 @@ static void destroy(RBinFile *bf) {
 	r2unity_free_metadata (obj->meta);
 	r2unity_serialized_file_free (obj->sf);
 	r2unity_bgdatabase_free (obj->bgdb);
+	r2unity_resource_pack_free (obj->resource_pack);
+	free (obj->resource_origin);
 	r_unref (obj->buf);
 	R_FREE (obj->strings);
 	free (obj);
@@ -344,13 +410,23 @@ static RBinInfo *info(RBinFile *bf) {
 		ret->subsystem = strdup ("assets");
 		ret->bits = 64;
 		ret->big_endian = obj->sf->big_endian;
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_BGDATABASE) {
 		ret->type = r_str_newf ("BGDatabase repository v%u", obj->bgdb->version);
 		ret->bclass = strdup ("BGDatabase repository");
 		ret->rclass = strdup ("bgdatabase");
 		ret->machine = strdup ("BansheeGz BGDatabase");
 		ret->os = strdup ("unity");
 		ret->subsystem = strdup ("save/database");
+		ret->bits = 32;
+		ret->big_endian = false;
+		ret->lang = "csharp";
+	} else {
+		ret->type = strdup ("Unity IL2CPP manifest-resource pack");
+		ret->bclass = strdup ("Unity IL2CPP resources");
+		ret->rclass = strdup ("il2cpp-resources");
+		ret->machine = strdup ("Unity IL2CPP");
+		ret->os = strdup ("unity");
+		ret->subsystem = strdup ("managed resources");
 		ret->bits = 32;
 		ret->big_endian = false;
 		ret->lang = "csharp";
@@ -393,6 +469,14 @@ static char *serialized_object_label(const R2UnitySerializedObject *asset, const
 	} else {
 		label = r_str_newf ("%s.%s.path_%"PFMT64d, prefix, class_name, asset->path_id);
 	}
+	free (clean);
+	return label;
+}
+
+static char *resource_pack_label(const R2UnityResourcePackEntry *entry,
+		const char *prefix) {
+	char *clean = r_name_filter_dup (entry->name);
+	char *label = r_str_newf ("%s.%s", prefix, clean);
 	free (clean);
 	return label;
 }
@@ -460,6 +544,25 @@ static bool sections_vec(RBinFile *bf) {
 			char *name = r_str_newf ("bgdb.table.%zu", i);
 			append_bgdatabase_section (ret, name, db->tables[i].offset,
 				db->tables[i].size, true);
+			free (name);
+		}
+		return true;
+	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		R2UnityResourcePack *pack = obj->resource_pack;
+		append_section (ret, "il2cpp.resources.header", 0, 8, false);
+		if (pack->payload_offset > 8) {
+			append_section (ret, "il2cpp.resources.records", 8,
+				pack->payload_offset - 8, true);
+		}
+		for (size_t i = 0; i < pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &pack->entries[i];
+			if (!entry->payload_size) {
+				continue;
+			}
+			char *name = resource_pack_label (entry, "il2cpp.resource");
+			append_section (ret, name, entry->payload_offset,
+				entry->payload_size, true);
 			free (name);
 		}
 		return true;
@@ -554,6 +657,26 @@ static RList *sections(RBinFile *bf) {
 			char *name = r_str_newf ("bgdb.table.%zu", i);
 			r_list_append (ret, new_bgdatabase_section (name, db->tables[i].offset,
 				db->tables[i].size, true));
+			free (name);
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		R2UnityResourcePack *pack = obj->resource_pack;
+		r_list_append (ret, new_section ("il2cpp.resources.header",
+			0, 8, false));
+		if (pack->payload_offset > 8) {
+			r_list_append (ret, new_section ("il2cpp.resources.records", 8,
+				pack->payload_offset - 8, true));
+		}
+		for (size_t i = 0; i < pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &pack->entries[i];
+			if (!entry->payload_size) {
+				continue;
+			}
+			char *name = resource_pack_label (entry, "il2cpp.resource");
+			r_list_append (ret, new_section (name, entry->payload_offset,
+				entry->payload_size, true));
 			free (name);
 		}
 		return ret;
@@ -772,6 +895,21 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 		}
 		return true;
 	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		R2UnityResourcePack *pack = obj->resource_pack;
+		append_symbol (ret, new_symbol ("il2cpp.resources", 0,
+			pack->payload_offset, R_BIN_TYPE_OBJECT_STR,
+			R_BIN_ATTR_READONLY, NULL, ordinal++));
+		for (size_t i = 0; i < pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &pack->entries[i];
+			char *name = resource_pack_label (entry, "il2cpp.resource");
+			append_symbol (ret, new_symbol (name, entry->payload_offset,
+				entry->payload_size, R_BIN_TYPE_OBJECT_STR,
+				R_BIN_ATTR_READONLY, "ManifestResource", ordinal++));
+			free (name);
+		}
+		return true;
+	}
 	R2UnityMetadata *meta = obj->meta;
 
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
@@ -924,6 +1062,9 @@ static RList *classes(RBinFile *bf) {
 			r_list_append (ret, klass);
 			free (name);
 		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
 		return ret;
 	}
 	R2UnityMetadata *meta = obj->meta;
@@ -1104,6 +1245,17 @@ static void add_bgdatabase_strings(R2UnityBinObj *obj, R2UnityStringSink *ret,
 	}
 }
 
+static void add_resource_pack_strings(R2UnityBinObj *obj,
+		R2UnityStringSink *ret, ut32 *ordinal) {
+	for (size_t i = 0; i < obj->resource_pack->entry_count; i++) {
+		R2UnityResourcePackEntry *entry = &obj->resource_pack->entries[i];
+		if (entry->name_size < R_BIN_SIZEOF_STRINGS) {
+			append_bin_string (ret, strdup (entry->name), entry->name_offset,
+				entry->name_size, (*ordinal)++);
+		}
+	}
+}
+
 #if R2UNITY_BIN_STRINGS_VEC_ABI
 static RVecRBinString *strings(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
@@ -1118,8 +1270,10 @@ static RVecRBinString *strings(RBinFile *bf) {
 		add_literal_strings (obj, ret, &ordinal);
 	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		add_serialized_strings (obj, ret, &ordinal);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_BGDATABASE) {
 		add_bgdatabase_strings (obj, ret, &ordinal);
+	} else {
+		add_resource_pack_strings (obj, ret, &ordinal);
 	}
 	return ret;
 }
@@ -1134,8 +1288,10 @@ static RList *strings(RBinFile *bf) {
 		add_literal_strings (obj, ret, &ordinal);
 	} else if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
 		add_serialized_strings (obj, ret, &ordinal);
-	} else {
+	} else if (obj->kind == R2UNITY_BIN_BGDATABASE) {
 		add_bgdatabase_strings (obj, ret, &ordinal);
+	} else {
+		add_resource_pack_strings (obj, ret, &ordinal);
 	}
 	return ret;
 }
@@ -1216,6 +1372,10 @@ static RList *libs(RBinFile *bf) {
 			r_list_append (ret,
 				bgdatabase_addon_assembly (obj->bgdb->addons[i].type));
 		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		r_list_append (ret, strdup (obj->resource_origin));
 		return ret;
 	}
 	size_t count = 0;
@@ -1301,6 +1461,27 @@ static RList *fields(RBinFile *bf) {
 			char *name = r_str_newf ("bgdb.tables.%zu.field_count", i);
 			r_list_append (ret, r_bin_field_new (table->offset, table->offset,
 				table->field_count, 4, name, NULL, "i", false));
+			free (name);
+		}
+		return ret;
+	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		R2UnityResourcePack *pack = obj->resource_pack;
+		r_list_append (ret, r_bin_field_new (0, 0, pack->records_size, 4,
+			"resources.records_size", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (4, 4, pack->entry_count, 4,
+			"resources.count", NULL, "i", false));
+		for (size_t i = 0; i < pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &pack->entries[i];
+			char *name = r_str_newf ("resources.entries.%zu.payload_size", i);
+			r_list_append (ret, r_bin_field_new (entry->descriptor_offset,
+				entry->descriptor_offset, entry->payload_size, 4,
+				name, NULL, "x", false));
+			free (name);
+			name = r_str_newf ("resources.entries.%zu.name_size", i);
+			r_list_append (ret, r_bin_field_new (entry->name_size_offset,
+				entry->name_size_offset, entry->name_size, 4,
+				name, NULL, "i", false));
 			free (name);
 		}
 		return ret;
@@ -1400,6 +1581,24 @@ static char *header(RBinFile *bf, int mode) {
 		}
 		return r_strbuf_drain (sb);
 	}
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		R2UnityResourcePack *pack = obj->resource_pack;
+		r_strbuf_appendf (sb, "Unity IL2CPP manifest resources (%s)\n",
+			obj->resource_origin);
+		r_strbuf_appendf (sb, "0x00000000  RecordsSize     0x%08x\n",
+			pack->records_size);
+		r_strbuf_appendf (sb, "0x00000004  Resources       %zu\n",
+			pack->entry_count);
+		r_strbuf_appendf (sb, "0x%08"PFMT64x"  Payloads\n",
+			pack->payload_offset);
+		for (size_t i = 0; i < pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &pack->entries[i];
+			r_strbuf_appendf (sb,
+				"0x%08"PFMT64x"  resource=%s size=0x%08"PFMT64x"\n",
+				entry->payload_offset, entry->name, entry->payload_size);
+		}
+		return r_strbuf_drain (sb);
+	}
 	r_strbuf_appendf (sb, "pf.r2unity_global_metadata_header @ 0x%08"PFMT64x"\n", (ut64)0);
 	r_strbuf_appendf (sb, "0x00000000  Sanity          0x%08x\n", IL2CPP_MAGIC);
 	r_strbuf_appendf (sb, "0x00000004  Version         %d (%s)\n", obj->meta->version, r2unity_unity_range_from_wire (obj->meta->version));
@@ -1422,6 +1621,62 @@ static char *header(RBinFile *bf, int mode) {
 }
 
 #if R2_ABIVERSION >= 121
+static bool resource_name_endswith(const char *name, const char *suffix) {
+	size_t name_length = strlen (name);
+	size_t suffix_length = strlen (suffix);
+	return name_length >= suffix_length
+		&& !r_str_casecmp (name + name_length - suffix_length, suffix);
+}
+
+static char *resource_pack_type(R2UnityBinObj *obj,
+		const R2UnityResourcePackEntry *entry) {
+	if (resource_name_endswith (entry->name, ".xml")) {
+		return strdup ("application/xml");
+	}
+	if (resource_name_endswith (entry->name, ".ico")) {
+		return strdup ("image/x-icon");
+	}
+	if (resource_name_endswith (entry->name, ".resources")) {
+		return strdup ("application/x-dotnet-resources");
+	}
+	if (resource_name_endswith (entry->name, ".json")) {
+		return strdup ("application/json");
+	}
+	if (resource_name_endswith (entry->name, ".txt")) {
+		return strdup ("text/plain");
+	}
+	ut8 prefix[8] = {0};
+	ut64 prefix_size = R_MIN (entry->payload_size, sizeof (prefix));
+	if (prefix_size && r_buf_read_at (obj->buf, entry->payload_offset,
+			prefix, prefix_size) == (st64)prefix_size) {
+		if (prefix_size >= 4 && !memcmp (prefix, "\xce\xca\xef\xbe", 4)) {
+			return strdup ("application/x-dotnet-resources");
+		}
+		if (prefix_size >= 4 && !memcmp (prefix, "\x89PNG", 4)) {
+			return strdup ("image/png");
+		}
+		if (prefix_size >= 4 && !memcmp (prefix, "FSB5", 4)) {
+			return strdup ("application/x-fmod-fsb");
+		}
+		if (prefix_size >= 4 && !memcmp (prefix, "PK\x03\x04", 4)) {
+			return strdup ("application/zip");
+		}
+		if (prefix_size >= 4 && !memcmp (prefix, "\x00\x00\x01\x00", 4)) {
+			return strdup ("image/x-icon");
+		}
+		if (prefix_size >= 3 && prefix[0] == 0xff
+			&& prefix[1] == 0xd8 && prefix[2] == 0xff) {
+			return strdup ("image/jpeg");
+		}
+		if (prefix_size >= 6
+			&& (!memcmp (prefix, "GIF87a", 6)
+				|| !memcmp (prefix, "GIF89a", 6))) {
+			return strdup ("image/gif");
+		}
+	}
+	return strdup ("application/octet-stream");
+}
+
 static char *serialized_resource_type(R2UnityBinObj *obj, const R2UnitySerializedObject *asset) {
 	if (asset->class_id != 49 || !asset->payload_size) {
 		return r_str_newf ("Unity.%s", r2unity_serialized_class_name (asset->class_id));
@@ -1448,6 +1703,31 @@ static char *serialized_resource_type(R2UnityBinObj *obj, const R2UnitySerialize
 static bool load_resources(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
+	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		for (size_t i = 0; i < obj->resource_pack->entry_count; i++) {
+			R2UnityResourcePackEntry *entry = &obj->resource_pack->entries[i];
+			RBinResource *resource = RVecRBinResource_emplace_back (
+				&bf->bo->resources_vec);
+			if (!resource) {
+				return false;
+			}
+			resource->name = strdup (entry->name);
+			resource->type = resource_pack_type (obj, entry);
+			resource->origin = strdup (obj->resource_origin);
+			resource->paddr = entry->payload_offset;
+			resource->vaddr = entry->payload_offset;
+			resource->size = entry->payload_size;
+			resource->id = UT64_MAX;
+			resource->index = (ut32)i;
+			resource->type_id = UT32_MAX;
+			resource->language_id = UT32_MAX;
+			resource->named = true;
+			if (!resource->name || !resource->type || !resource->origin) {
+				return false;
+			}
+		}
+		return true;
+	}
 	if (obj->kind != R2UNITY_BIN_SERIALIZED_FILE) {
 		return true;
 	}
@@ -1489,7 +1769,7 @@ static bool load_resources(RBinFile *bf) {
 RBinPlugin r_bin_plugin_r2unity = {
 	.meta = {
 		.name = "r2unity",
-		.desc = "Unity IL2CPP metadata, SerializedFiles and BGDatabase saves",
+		.desc = "Unity IL2CPP metadata/resources, SerializedFiles and BGDatabase saves",
 		.author = "pancake",
 		.license = "MIT",
 	},

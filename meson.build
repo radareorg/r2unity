@@ -82,7 +82,11 @@ if build_plugins
 
   shared_library(
     'bin_r2unity',
-    files('src/r2/bin_r2unity.c', 'src/lib/bgdatabase.c') + lib_sources,
+    files(
+      'src/r2/bin_r2unity.c',
+      'src/lib/bgdatabase.c',
+      'src/lib/resource_pack.c',
+    ) + lib_sources,
     include_directories: lib_inc,
     dependencies: [r_bin_dep],
     name_prefix: '',

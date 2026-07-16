@@ -42,7 +42,7 @@ Consequently:
 | File or suffix | Meaning | Self-contained? | Current support |
 | --- | --- | --- | --- |
 | `global-metadata.dat` | IL2CPP managed metadata | Yes, but native address correlation needs the matching IL2CPP binary | r2unity |
-| `*.dll-resources.dat` | IL2CPP assembly manifest-resource pack | Yes | None |
+| `*.dll-resources.dat` | IL2CPP assembly manifest-resource pack | Yes | r2unity |
 | `*.resources` | Standard binary .NET resource dictionary | Yes | Outer payload only when embedded in a PE; no entry parser |
 | `resources.assets` | Serialized assets originating in project `Resources` directories | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
 | `sharedassets*.assets` | Serialized assets shared by scenes | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
@@ -452,6 +452,29 @@ This is the highest-value short-term resource implementation for r2unity:
 the layout is small, deterministic, and immediately enables `iU`, `iUj`, and
 `iUx`.
 
+### 6.6 Implemented resource-pack baseline
+
+The existing `bin_r2unity` plugin now recognizes `*-resources.dat` inputs and
+uses a dedicated bounded `RBuffer` parser. Automatic detection requires the
+filename suffix because the format has no magic. The parser validates the
+descriptor-area size, resource count, UTF-8 names, exact descriptor
+consumption, every payload range, and exact end-of-file consumption.
+
+The plugin exposes header, descriptor, and payload sections; payload symbols;
+descriptor fields and strings; the owning assembly as a library; and one
+`RBinResource` per payload. XML, icon, .NET `.resources`, JSON, text, PNG,
+JPEG, GIF, ZIP, and FSB5 payloads receive conservative content types, with
+unknown payloads remaining `application/octet-stream`.
+
+The fixture corpus currently covers:
+
+- one XML resource from `System.Data.dll-resources.dat`
+- six icon resources from `System.Drawing.dll-resources.dat`
+- seven binary collation resources from `mscorlib.dll-resources.dat`
+
+All payloads are inline, so generic `iU`, `iUj`, and `iUx` extraction works
+without the external-sidecar API needed by `.resS` and `.resource`.
+
 ## 7. Standard .NET `.resources`
 
 ### 7.1 Relationship to assemblies and IL2CPP packs
@@ -805,8 +828,9 @@ in the string API and must not all become resources.
 
 ### 14.1 r2unity today
 
-The current `bin_r2unity` plugin recognizes both IL2CPP
-`global-metadata.dat` and Unity SerializedFile v22. The metadata path exposes
+The current `bin_r2unity` plugin recognizes IL2CPP `global-metadata.dat`,
+IL2CPP `*-resources.dat`, Unity SerializedFile v22, and BGDatabase v6. The
+metadata path exposes
 metadata sections, strings, symbols, imports, classes, fields, and header
 information. The SerializedFile path exposes structural sections, object and
 payload symbols, type classes, fields, strings, external dependencies, header
@@ -819,6 +843,7 @@ Companion discovery currently locates:
 - `global-metadata.dat`
 - the Player Data directory
 
+Resource packs opened directly expose named payloads through `RBinResource`.
 Companion discovery does not yet enumerate `Managed/Resources`, loose
 SerializedFiles, UnityFS archives, sidecars, or Addressables content. A loose
 v22 SerializedFile can nevertheless be opened directly by r2 or rabin2.
@@ -848,7 +873,8 @@ No parser in radare2 core was found for:
 - nested/standalone .NET `.resources` entries
 - standalone Windows `.res`
 
-The out-of-tree r2unity plugin now fills this gap for SerializedFile v22.
+The out-of-tree r2unity plugin now fills this gap for SerializedFile v22 and
+IL2CPP manifest-resource packs.
 Running core radare2 without that plugin still produces no Unity asset
 resources, confirming that generic command wiring and format parsing are
 separate concerns.
@@ -865,19 +891,18 @@ separate concerns.
 
 ### Stage 1: IL2CPP manifest-resource packs in r2unity
 
-Add a dedicated library parser and bin plugin for
-`*.dll-resources.dat`:
+Implemented in the existing `bin_r2unity` plugin with a dedicated library
+parser for `*.dll-resources.dat`:
 
-- parse and validate descriptors
-- expose records through `RBinResource`
-- detect common payload types from extension and magic
-- set the assembly/pack as `origin`
-- support `iU`, JSON, flags, and safe extraction without new commands
-- add unit and integration tests for the System.Data, System.Drawing, and
-  mscorlib fixtures
+- descriptors and payload ranges are fully bounded
+- records are exposed through `RBinResource`
+- common payload types are detected from extension and magic
+- the assembly is recorded as `origin`
+- `iU`, JSON, flags, and safe extraction work without new commands
+- System.Data, System.Drawing, and mscorlib fixtures are covered
 
-This should be a separate plugin from `bin_r2unity` because the format has a
-different detector and object lifetime from `global-metadata.dat`.
+Keeping a dedicated parser and object kind preserves the distinct detector
+and lifetime while avoiding an additional bin plugin.
 
 ### Stage 2: generic .NET `.resources` in radare2
 
@@ -1041,13 +1066,10 @@ core.
 
 After the SerializedFile v22 baseline, the next useful milestone is:
 
-1. add `bin_r2unity_resources` for `*.dll-resources.dat`
-2. populate `RBinResource` records with name, origin, offset, size, and type
-3. test `iU`, `iUj`, and `iUx` on the existing resource-pack fixtures
-4. add fixture-backed SerializedFile versions around v22 and more built-in
+1. add fixture-backed SerializedFile versions around v22 and more built-in
    object decoders
-5. add the optional document/data-URI classifier to managed literals
-6. implement generic `.resources` parsing in radare2 next
+2. add the optional document/data-URI classifier to managed literals
+3. implement generic `.resources` parsing in radare2 next
 
 This produces immediate resource visibility without pretending that raw
 `.resS`, arbitrary `.dat` saves, or full Unity object serialization are the

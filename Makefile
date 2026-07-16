@@ -31,7 +31,9 @@ BIN_PLUGIN_LDFLAGS = $(shell pkg-config --libs r_bin 2>/dev/null || echo "")
 R2_USER_PLUGINS = $(shell r2 -H R2_USER_PLUGINS 2>/dev/null)
 
 BGDATABASE_LIB_SRCS = src/lib/bgdatabase.c
-LIB_SRCS = $(filter-out $(BGDATABASE_LIB_SRCS),$(wildcard src/lib/*.c)) $(wildcard src/lib/bin/*.c)
+RESOURCE_PACK_LIB_SRCS = src/lib/resource_pack.c
+BIN_ONLY_LIB_SRCS = $(BGDATABASE_LIB_SRCS) $(RESOURCE_PACK_LIB_SRCS)
+LIB_SRCS = $(filter-out $(BIN_ONLY_LIB_SRCS),$(wildcard src/lib/*.c)) $(wildcard src/lib/bin/*.c)
 LIB_OBJS = $(LIB_SRCS:.c=.o)
 LEGACY_OBJS = src/lib/elf.o src/lib/macho.o src/lib/pe.o src/lib/native.o
 CLI_SRCS = src/main.c
@@ -76,7 +78,7 @@ $(CLI_OBJS): %.o: %.c $(CONFIG_H)
 $(CORE_PLUGIN): src/r2/core_r2unity.c $(LIB_SRCS)
 	$(CC) $(CORE_PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(CORE_PLUGIN_LDFLAGS)
 
-$(BIN_PLUGIN): src/r2/bin_r2unity.c $(LIB_SRCS) $(BGDATABASE_LIB_SRCS)
+$(BIN_PLUGIN): src/r2/bin_r2unity.c $(LIB_SRCS) $(BIN_ONLY_LIB_SRCS)
 	$(CC) $(BIN_PLUGIN_CFLAGS) $(PLUGIN_SHFLAGS) -o $@ $^ $(BIN_PLUGIN_LDFLAGS)
 
 %.o: %.c

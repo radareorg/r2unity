@@ -22,6 +22,8 @@ IL2CPP binary, and exposes managed metadata for reverse engineering.
   SBOMs for managed assemblies.
 - Provides both a core r2 command plugin and an `r_bin` plugin for direct
   `global-metadata.dat` inspection.
+- Parses IL2CPP `*.dll-resources.dat` packs and exposes named payloads through
+  radare2's resource listing and extraction APIs.
 - Recognizes Unity SerializedFile v22 asset databases and exposes their
   headers, object ranges, names, symbols, classes, dependencies, and resources.
 - Recognizes BGDatabase v6 repositories and whole-database saves, including
@@ -122,6 +124,14 @@ rabin2 -I SaveFile.dat
 rabin2 -S SaveFile.dat
 rabin2 -s SaveFile.dat
 rabin2 -z SaveFile.dat
+```
+
+IL2CPP manifest-resource packs use the same bin plugin:
+
+```sh
+rabin2 -U System.Drawing.dll-resources.dat
+rabin2 -jU System.Drawing.dll-resources.dat
+rabin2 -xU -o extracted System.Drawing.dll-resources.dat
 ```
 
 ## Current Limits
