@@ -2,9 +2,11 @@
 
 #define R_LOG_ORIGIN "r2unity.bin"
 
+#include <ctype.h>
 #include <r_bin.h>
 #include <r_lib.h>
 #include "../lib/lib.h"
+#include "../lib/serialized_file.h"
 
 #if defined(R_LIB_ABIVERSION) && !defined(R2_ABIVERSION)
 #define R2_ABIVERSION R_LIB_ABIVERSION
@@ -22,8 +24,15 @@
 #define R2UNITY_BIN_STRINGS_VEC_ABI 0
 #endif
 
+typedef enum {
+	R2UNITY_BIN_METADATA,
+	R2UNITY_BIN_SERIALIZED_FILE,
+} R2UnityBinKind;
+
 typedef struct {
+	R2UnityBinKind kind;
 	R2UnityMetadata *meta;
+	R2UnitySerializedFile *sf;
 	RBuffer *buf;
 	Sdb *kv;
 	ut8 *strings;
@@ -58,16 +67,15 @@ static bool check(RBinFile *bf, RBuffer *b) {
 	(void)bf;
 	R_RETURN_VAL_IF_FAIL (b, false);
 	ut8 preamble[8];
-	if (r_buf_read_at (b, 0, preamble, sizeof (preamble)) != (st64)sizeof (preamble)) {
-		return false;
+	if (r_buf_read_at (b, 0, preamble, sizeof (preamble)) == (st64)sizeof (preamble)
+		&& r_read_le32 (preamble) == IL2CPP_MAGIC
+		&& valid_wire_version ((int32_t)r_read_le32 (preamble + 4))) {
+		return true;
 	}
-	if (r_read_le32 (preamble) != IL2CPP_MAGIC) {
-		return false;
-	}
-	return valid_wire_version ((int32_t)r_read_le32 (preamble + 4));
+	return r2unity_serialized_file_check (b);
 }
 
-static void fill_sdb(R2UnityBinObj *obj) {
+static void fill_metadata_sdb(R2UnityBinObj *obj) {
 	Sdb *kv = obj->kv;
 	R2UnityMetadata *meta = obj->meta;
 	sdb_num_set (kv, "version", (ut64)meta->version, 0);
@@ -99,29 +107,113 @@ static void fill_sdb(R2UnityBinObj *obj) {
 	sdb_num_set (kv, "counts.string_literals", r2unity_metadata_section_count (meta, R2U_SEC_STRING_LITERALS), 0);
 }
 
+static void fill_serialized_file_sdb(R2UnityBinObj *obj) {
+	Sdb *kv = obj->kv;
+	R2UnitySerializedFile *sf = obj->sf;
+	sdb_set (kv, "format", "serialized_file", 0);
+	sdb_num_set (kv, "version", sf->version, 0);
+	sdb_set (kv, "unity_version", sf->unity_version, 0);
+	sdb_num_set (kv, "target_platform", (ut64)(st64)sf->target_platform, 0);
+	sdb_num_set (kv, "big_endian", sf->big_endian, 0);
+	sdb_num_set (kv, "type_tree", sf->enable_type_tree, 0);
+	sdb_num_set (kv, "header.size", sf->header_size, 0);
+	sdb_num_set (kv, "metadata.offset", sf->header_size, 0);
+	sdb_num_set (kv, "metadata.size", sf->metadata_size, 0);
+	sdb_num_set (kv, "data.offset", sf->data_offset, 0);
+	sdb_num_set (kv, "counts.types", sf->type_count, 0);
+	sdb_num_set (kv, "counts.objects", sf->object_count, 0);
+	sdb_num_set (kv, "counts.scripts", sf->script_count, 0);
+	sdb_num_set (kv, "counts.externals", sf->external_count, 0);
+	for (size_t i = 0; i < sf->external_count; i++) {
+		char key[128];
+		snprintf (key, sizeof (key), "externals.%zu.path", i);
+		sdb_set (kv, key, sf->externals[i].path, 0);
+	}
+	for (size_t i = 0; i < sf->object_count; i++) {
+		R2UnitySerializedObject *asset = &sf->objects[i];
+		char key[128];
+		snprintf (key, sizeof (key), "objects.%zu.path_id", i);
+		sdb_num_set (kv, key, (ut64)asset->path_id, 0);
+		snprintf (key, sizeof (key), "objects.%zu.class_id", i);
+		sdb_num_set (kv, key, (ut64)(st64)asset->class_id, 0);
+		snprintf (key, sizeof (key), "objects.%zu.class", i);
+		sdb_set (kv, key, r2unity_serialized_class_name (asset->class_id), 0);
+		snprintf (key, sizeof (key), "objects.%zu.offset", i);
+		sdb_num_set (kv, key, asset->offset, 0);
+		snprintf (key, sizeof (key), "objects.%zu.size", i);
+		sdb_num_set (kv, key, asset->size, 0);
+		if (asset->name) {
+			snprintf (key, sizeof (key), "objects.%zu.name", i);
+			sdb_set (kv, key, asset->name, 0);
+		}
+		if (asset->payload_size) {
+			snprintf (key, sizeof (key), "objects.%zu.payload.offset", i);
+			sdb_num_set (kv, key, asset->payload_offset, 0);
+			snprintf (key, sizeof (key), "objects.%zu.payload.size", i);
+			sdb_num_set (kv, key, asset->payload_size, 0);
+		}
+		if (asset->stream_path) {
+			snprintf (key, sizeof (key), "objects.%zu.stream.path", i);
+			sdb_set (kv, key, asset->stream_path, 0);
+			snprintf (key, sizeof (key), "objects.%zu.stream.offset", i);
+			sdb_num_set (kv, key, asset->stream_offset, 0);
+			snprintf (key, sizeof (key), "objects.%zu.stream.size", i);
+			sdb_num_set (kv, key, asset->stream_size, 0);
+		}
+	}
+}
+
 static bool load(RBinFile *bf, RBuffer *buf, ut64 loadaddr) {
 	(void)loadaddr;
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && buf, false);
 	R2UnityBinObj *obj = R_NEW0 (R2UnityBinObj);
 	obj->buf = r_buf_new_slice (buf, 0, r_buf_size (buf));
-	obj->meta = r2unity_parse_metadata (obj->buf);
-	if (!obj->meta) {
+	if (!obj->buf) {
+		free (obj);
+		return false;
+	}
+	ut8 preamble[8];
+	bool is_metadata = r_buf_read_at (obj->buf, 0, preamble, sizeof (preamble)) == sizeof (preamble)
+		&& r_read_le32 (preamble) == IL2CPP_MAGIC
+		&& valid_wire_version ((int32_t)r_read_le32 (preamble + 4));
+	if (is_metadata) {
+		obj->kind = R2UNITY_BIN_METADATA;
+		obj->meta = r2unity_parse_metadata (obj->buf);
+	} else {
+		obj->kind = R2UNITY_BIN_SERIALIZED_FILE;
+		obj->sf = r2unity_serialized_file_parse (obj->buf);
+	}
+	if (!obj->meta && !obj->sf) {
 		r_unref (obj->buf);
 		free (obj);
 		return false;
 	}
-	Il2CppMetadataSection strings_sec;
-	r2unity_metadata_section (obj->meta, R2U_SEC_STRINGS, &strings_sec);
-	obj->strings_size = strings_sec.size;
-	if (obj->strings_size) {
-		obj->strings = R_NEWS (ut8, obj->strings_size);
-		if (obj->strings && r_buf_read_at (obj->buf, strings_sec.offset, obj->strings, obj->strings_size) != (st64)obj->strings_size) {
-			R_FREE (obj->strings);
-			obj->strings_size = 0;
+	if (obj->kind == R2UNITY_BIN_METADATA) {
+		Il2CppMetadataSection strings_sec;
+		r2unity_metadata_section (obj->meta, R2U_SEC_STRINGS, &strings_sec);
+		obj->strings_size = strings_sec.size;
+		if (obj->strings_size) {
+			obj->strings = R_NEWS (ut8, obj->strings_size);
+			if (obj->strings && r_buf_read_at (obj->buf, strings_sec.offset, obj->strings, obj->strings_size) != (st64)obj->strings_size) {
+				R_FREE (obj->strings);
+				obj->strings_size = 0;
+			}
 		}
 	}
 	obj->kv = sdb_new0 ();
-	fill_sdb (obj);
+	if (!obj->kv) {
+		r2unity_free_metadata (obj->meta);
+		r2unity_serialized_file_free (obj->sf);
+		r_unref (obj->buf);
+		R_FREE (obj->strings);
+		free (obj);
+		return false;
+	}
+	if (obj->kind == R2UNITY_BIN_METADATA) {
+		fill_metadata_sdb (obj);
+	} else {
+		fill_serialized_file_sdb (obj);
+	}
 	bf->bo->bin_obj = obj;
 	return true;
 }
@@ -132,6 +224,7 @@ static void destroy(RBinFile *bf) {
 		return;
 	}
 	r2unity_free_metadata (obj->meta);
+	r2unity_serialized_file_free (obj->sf);
 	r_unref (obj->buf);
 	R_FREE (obj->strings);
 	free (obj);
@@ -157,17 +250,28 @@ static RBinInfo *info(RBinFile *bf) {
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RBinInfo *ret = R_NEW0 (RBinInfo);
 	ret->file = bf->file? strdup (bf->file): NULL;
-	ret->type = r_str_newf ("Unity IL2CPP global-metadata v%d", obj->meta->version);
-	ret->bclass = strdup ("Unity IL2CPP metadata");
-	ret->rclass = strdup ("il2cpp");
-	ret->machine = strdup ("Unity IL2CPP metadata");
-	ret->os = strdup ("any");
-	ret->arch = strdup ("cil");
-	ret->bits = 32;
+	if (obj->kind == R2UNITY_BIN_METADATA) {
+		ret->type = r_str_newf ("Unity IL2CPP global-metadata v%d", obj->meta->version);
+		ret->bclass = strdup ("Unity IL2CPP metadata");
+		ret->rclass = strdup ("il2cpp");
+		ret->machine = strdup ("Unity IL2CPP metadata");
+		ret->os = strdup ("any");
+		ret->arch = strdup ("cil");
+		ret->bits = 32;
+		ret->big_endian = 0;
+		ret->lang = "csharp";
+	} else {
+		ret->type = r_str_newf ("Unity SerializedFile v%u (%s)", obj->sf->version, obj->sf->unity_version);
+		ret->bclass = strdup ("Unity SerializedFile");
+		ret->rclass = strdup ("unity");
+		ret->machine = strdup (obj->sf->unity_version);
+		ret->os = strdup ("unity");
+		ret->subsystem = strdup ("assets");
+		ret->bits = 64;
+		ret->big_endian = obj->sf->big_endian;
+	}
 	ret->has_va = false;
-	ret->big_endian = 0;
 	ret->has_lit = true;
-	ret->lang = "csharp";
 	return ret;
 }
 
@@ -185,6 +289,21 @@ static void init_section(RBinSection *sec, const char *name, ut64 off, ut64 size
 	sec->add = true;
 }
 
+static char *serialized_object_label(const R2UnitySerializedObject *asset, const char *prefix) {
+	const char *class_name = r2unity_serialized_class_name (asset->class_id);
+	char *clean = asset->name? r_name_filter_dup (asset->name): NULL;
+	char *label;
+	if (clean && *clean) {
+		label = r_str_newf ("%s.%s.%s", prefix, class_name, clean);
+	} else if (asset->class_id && !strcmp (class_name, "Object")) {
+		label = r_str_newf ("%s.Class%d.path_%"PFMT64d, prefix, asset->class_id, asset->path_id);
+	} else {
+		label = r_str_newf ("%s.%s.path_%"PFMT64d, prefix, class_name, asset->path_id);
+	}
+	free (clean);
+	return label;
+}
+
 #if R2UNITY_BIN_VEC_ABI
 static void append_section(RVecRBinSection *ret, const char *name, ut64 off, ut64 size, bool has_strings) {
 	RBinSection *sec = RVecRBinSection_emplace_back (ret);
@@ -198,6 +317,26 @@ static bool sections_vec(RBinFile *bf) {
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
 	RVecRBinSection *ret = &bf->bo->sections_vec;
 	RVecRBinSection_clear (ret);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		append_section (ret, "unity.header", 0, sf->header_size, false);
+		append_section (ret, "unity.metadata", sf->header_size, sf->metadata_size, true);
+		ut64 metadata_end = sf->header_size + sf->metadata_size;
+		if (sf->data_offset > metadata_end) {
+			append_section (ret, "unity.padding", metadata_end, sf->data_offset - metadata_end, false);
+		}
+		if (sf->file_size > sf->data_offset) {
+			append_section (ret, "unity.data", sf->data_offset, sf->file_size - sf->data_offset, true);
+		}
+		for (size_t i = 0; i < sf->object_count; i++) {
+			R2UnitySerializedObject *asset = &sf->objects[i];
+			char *name = serialized_object_label (asset, "unity.object");
+			append_section (ret, name, asset->offset, asset->size,
+				asset->class_id == 49 || asset->name_size > 0);
+			free (name);
+		}
+		return true;
+	}
 	ut64 header_size = r2unity_metadata_header_size (obj->meta);
 	if (header_size) {
 		append_section (ret, "il2cpp.header", 0, header_size, false);
@@ -239,6 +378,26 @@ static RList *sections(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RList *ret = r_list_newf (section_free);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		r_list_append (ret, new_section ("unity.header", 0, sf->header_size, false));
+		r_list_append (ret, new_section ("unity.metadata", sf->header_size, sf->metadata_size, true));
+		ut64 metadata_end = sf->header_size + sf->metadata_size;
+		if (sf->data_offset > metadata_end) {
+			r_list_append (ret, new_section ("unity.padding", metadata_end, sf->data_offset - metadata_end, false));
+		}
+		if (sf->file_size > sf->data_offset) {
+			r_list_append (ret, new_section ("unity.data", sf->data_offset, sf->file_size - sf->data_offset, true));
+		}
+		for (size_t i = 0; i < sf->object_count; i++) {
+			R2UnitySerializedObject *asset = &sf->objects[i];
+			char *name = serialized_object_label (asset, "unity.object");
+			r_list_append (ret, new_section (name, asset->offset, asset->size,
+				asset->class_id == 49 || asset->name_size > 0));
+			free (name);
+		}
+		return ret;
+	}
 	ut64 header_size = r2unity_metadata_header_size (obj->meta);
 	if (header_size) {
 		r_list_append (ret, new_section ("il2cpp.header", 0, header_size, false));
@@ -401,8 +560,29 @@ static void append_class_method(RBinClass *klass, RBinSymbol *sym) {
 static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, false);
-	R2UnityMetadata *meta = obj->meta;
 	int ordinal = 0;
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		for (size_t i = 0; i < sf->object_count; i++) {
+			R2UnitySerializedObject *asset = &sf->objects[i];
+			char *name = serialized_object_label (asset, "unity");
+			RBinSymbol *sym = new_symbol (name, asset->offset, asset->size,
+				R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY,
+				r2unity_serialized_class_name (asset->class_id), ordinal++);
+			append_symbol (ret, sym);
+			if (asset->payload_size) {
+				char *payload_name = r_str_newf ("resource.%s", name);
+				sym = new_symbol (payload_name, asset->payload_offset, asset->payload_size,
+					R_BIN_TYPE_OBJECT_STR, R_BIN_ATTR_READONLY,
+					r2unity_serialized_class_name (asset->class_id), ordinal++);
+				append_symbol (ret, sym);
+				free (payload_name);
+			}
+			free (name);
+		}
+		return true;
+	}
+	R2UnityMetadata *meta = obj->meta;
 
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
 		Il2CppMetadataSection sec;
@@ -519,8 +699,32 @@ static RList *symbols(RBinFile *bf) {
 static RList *classes(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
-	R2UnityMetadata *meta = obj->meta;
 	RList *ret = r_list_newf ((RListFree)r_bin_class_free);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		for (size_t i = 0; i < sf->type_count; i++) {
+			R2UnitySerializedType *type = &sf->types[i];
+			const char *class_name = r2unity_serialized_class_name (type->class_id);
+			char *name = NULL;
+			if (type->class_id == 114 && type->script_type_index >= 0) {
+				name = r_str_newf ("%s.script_%d", class_name, type->script_type_index);
+			} else if (!strcmp (class_name, "Object")) {
+				name = r_str_newf ("Class%d", type->class_id);
+			} else {
+				name = strdup (class_name);
+			}
+			RBinClass *klass = r_bin_class_new (name, NULL, R_BIN_ATTR_NONE);
+			if (klass) {
+				klass->index = (int)i;
+				klass->addr = type->offset;
+				klass->lang = R_BIN_LANG_NONE;
+				r_list_append (ret, klass);
+			}
+			free (name);
+		}
+		return ret;
+	}
+	R2UnityMetadata *meta = obj->meta;
 
 	size_t type_count = 0;
 	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
@@ -656,6 +860,37 @@ static void add_literal_strings(R2UnityBinObj *obj, R2UnityStringSink *ret, ut32
 	R_FREE (lits);
 }
 
+static void add_serialized_strings(R2UnityBinObj *obj, R2UnityStringSink *ret, ut32 *ordinal) {
+	R2UnitySerializedFile *sf = obj->sf;
+	for (size_t i = 0; i < sf->object_count; i++) {
+		R2UnitySerializedObject *asset = &sf->objects[i];
+		if (asset->name && asset->name_size > 1 && asset->name_size < R_BIN_SIZEOF_STRINGS) {
+			append_bin_string (ret, strdup (asset->name), asset->name_offset,
+				asset->name_size, (*ordinal)++);
+		}
+		if (asset->payload_size > 1 && asset->payload_size < R_BIN_SIZEOF_STRINGS) {
+			ut8 *bytes = R_NEWS (ut8, asset->payload_size + 1);
+			if (bytes && r_buf_read_at (obj->buf, asset->payload_offset, bytes,
+					asset->payload_size) == (st64)asset->payload_size
+				&& !memchr (bytes, 0, asset->payload_size)) {
+				bytes[asset->payload_size] = 0;
+				append_bin_string (ret, (char *)bytes, asset->payload_offset,
+					asset->payload_size, (*ordinal)++);
+				bytes = NULL;
+			}
+			free (bytes);
+		}
+	}
+	for (size_t i = 0; i < sf->external_count; i++) {
+		R2UnitySerializedExternal *external = &sf->externals[i];
+		ut64 length = strlen (external->path);
+		if (length > 1 && length < R_BIN_SIZEOF_STRINGS) {
+			append_bin_string (ret, strdup (external->path), external->path_offset,
+				(ut32)length, (*ordinal)++);
+		}
+	}
+}
+
 #if R2UNITY_BIN_STRINGS_VEC_ABI
 static RVecRBinString *strings(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
@@ -665,8 +900,12 @@ static RVecRBinString *strings(RBinFile *bf) {
 		return NULL;
 	}
 	ut32 ordinal = 0;
-	add_metadata_strings (obj, ret, &ordinal);
-	add_literal_strings (obj, ret, &ordinal);
+	if (obj->kind == R2UNITY_BIN_METADATA) {
+		add_metadata_strings (obj, ret, &ordinal);
+		add_literal_strings (obj, ret, &ordinal);
+	} else {
+		add_serialized_strings (obj, ret, &ordinal);
+	}
 	return ret;
 }
 #else
@@ -675,8 +914,12 @@ static RList *strings(RBinFile *bf) {
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RList *ret = r_list_newf ((RListFree)r_bin_string_free);
 	ut32 ordinal = 0;
-	add_metadata_strings (obj, ret, &ordinal);
-	add_literal_strings (obj, ret, &ordinal);
+	if (obj->kind == R2UNITY_BIN_METADATA) {
+		add_metadata_strings (obj, ret, &ordinal);
+		add_literal_strings (obj, ret, &ordinal);
+	} else {
+		add_serialized_strings (obj, ret, &ordinal);
+	}
 	return ret;
 }
 #endif
@@ -704,6 +947,9 @@ static void append_import(R2UnityImportSink *ret, RBinImport *imp) {
 static bool imports_fill(RBinFile *bf, R2UnityImportSink *ret) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, false);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		return true;
+	}
 	size_t count = 0;
 	R2UnityInterop *items = r2unity_enumerate_pinvokes (obj->meta, &count);
 	for (size_t i = 0; items && i < count; i++) {
@@ -742,6 +988,12 @@ static RList *libs(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RList *ret = r_list_newf (free);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		for (size_t i = 0; i < obj->sf->external_count; i++) {
+			r_list_append (ret, strdup (obj->sf->externals[i].path));
+		}
+		return ret;
+	}
 	size_t count = 0;
 	Il2CppAssemblyDefinition *asms = r2unity_get_assemblies (obj->meta, &count);
 	for (size_t i = 0; asms && i < count; i++) {
@@ -758,6 +1010,40 @@ static RList *fields(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (obj, NULL);
 	RList *ret = r_list_newf ((RListFree)r_bin_field_free);
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		r_list_append (ret, r_bin_field_new (8, 8, sf->version, 4,
+			"serialized.version", NULL, "i", false));
+		r_list_append (ret, r_bin_field_new (16, 16, sf->big_endian, 1,
+			"serialized.endian", NULL, "i", false));
+		r_list_append (ret, r_bin_field_new (20, 20, sf->metadata_size, 4,
+			"serialized.metadata_size", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (24, 24, sf->file_size, 8,
+			"serialized.file_size", NULL, "x", false));
+		r_list_append (ret, r_bin_field_new (32, 32, sf->data_offset, 8,
+			"serialized.data_offset", NULL, "x", false));
+		for (size_t i = 0; i < sf->object_count; i++) {
+			R2UnitySerializedObject *asset = &sf->objects[i];
+			char *name = r_str_newf ("serialized.objects.%zu.path_id", i);
+			r_list_append (ret, r_bin_field_new (asset->table_offset,
+				asset->table_offset, asset->path_id, 8, name, NULL, "i", false));
+			free (name);
+			name = r_str_newf ("serialized.objects.%zu.byte_start", i);
+			r_list_append (ret, r_bin_field_new (asset->table_offset + 8,
+				asset->table_offset + 8, asset->offset - sf->data_offset, 8,
+				name, NULL, "x", false));
+			free (name);
+			name = r_str_newf ("serialized.objects.%zu.byte_size", i);
+			r_list_append (ret, r_bin_field_new (asset->table_offset + 16,
+				asset->table_offset + 16, asset->size, 4, name, NULL, "x", false));
+			free (name);
+			name = r_str_newf ("serialized.objects.%zu.type_index", i);
+			r_list_append (ret, r_bin_field_new (asset->table_offset + 20,
+				asset->table_offset + 20, asset->type_index, 4, name, NULL, "i", false));
+			free (name);
+		}
+		return ret;
+	}
 	r_list_append (ret, r_bin_field_new (0, 0, IL2CPP_MAGIC, 4, "metadata.sanity", NULL, "x", false));
 	r_list_append (ret, r_bin_field_new (4, 4, obj->meta->version, 4, "metadata.version", NULL, "i", false));
 	bool v38 = obj->meta->version >= 38;
@@ -799,6 +1085,33 @@ static char *header(RBinFile *bf, int mode) {
 		return NULL;
 	}
 	RStrBuf *sb = r_strbuf_new ("");
+	if (obj->kind == R2UNITY_BIN_SERIALIZED_FILE) {
+		R2UnitySerializedFile *sf = obj->sf;
+		r_strbuf_appendf (sb, "Unity SerializedFile v%u (%s)\n", sf->version, sf->unity_version);
+		r_strbuf_appendf (sb, "0x00000000  HeaderSize      0x%08"PFMT64x"\n", sf->header_size);
+		r_strbuf_appendf (sb, "0x00000014  MetadataSize    0x%08x\n", sf->metadata_size);
+		r_strbuf_appendf (sb, "0x00000018  FileSize        0x%08"PFMT64x"\n", sf->file_size);
+		r_strbuf_appendf (sb, "0x00000020  DataOffset      0x%08"PFMT64x"\n", sf->data_offset);
+		r_strbuf_appendf (sb, "              Endian          %s\n", sf->big_endian? "big": "little");
+		r_strbuf_appendf (sb, "              TargetPlatform  %d\n", sf->target_platform);
+		r_strbuf_appendf (sb, "              TypeTree        %s\n", sf->enable_type_tree? "yes": "no");
+		r_strbuf_appendf (sb, "              Types           %zu\n", sf->type_count);
+		r_strbuf_appendf (sb, "              Objects         %zu\n", sf->object_count);
+		r_strbuf_appendf (sb, "              Scripts         %zu\n", sf->script_count);
+		r_strbuf_appendf (sb, "              Externals       %zu\n", sf->external_count);
+		for (size_t i = 0; i < sf->object_count; i++) {
+			R2UnitySerializedObject *asset = &sf->objects[i];
+			r_strbuf_appendf (sb, "0x%08"PFMT64x"  path=%"PFMT64d" %-18s size=0x%08"PFMT64x"%s%s\n",
+				asset->offset, asset->path_id,
+				r2unity_serialized_class_name (asset->class_id), asset->size,
+				asset->name? " name=": "", asset->name? asset->name: "");
+			if (asset->stream_path) {
+				r_strbuf_appendf (sb, "              stream=%s offset=0x%08"PFMT64x" size=0x%08"PFMT64x"\n",
+					asset->stream_path, asset->stream_offset, asset->stream_size);
+			}
+		}
+		return r_strbuf_drain (sb);
+	}
 	r_strbuf_appendf (sb, "pf.r2unity_global_metadata_header @ 0x%08"PFMT64x"\n", (ut64)0);
 	r_strbuf_appendf (sb, "0x00000000  Sanity          0x%08x\n", IL2CPP_MAGIC);
 	r_strbuf_appendf (sb, "0x00000004  Version         %d (%s)\n", obj->meta->version, r2unity_unity_range_from_wire (obj->meta->version));
@@ -820,10 +1133,75 @@ static char *header(RBinFile *bf, int mode) {
 	return r_strbuf_drain (sb);
 }
 
+#if R2_ABIVERSION >= 121
+static char *serialized_resource_type(R2UnityBinObj *obj, const R2UnitySerializedObject *asset) {
+	if (asset->class_id != 49 || !asset->payload_size) {
+		return r_str_newf ("Unity.%s", r2unity_serialized_class_name (asset->class_id));
+	}
+	if (asset->name && r_str_endswith (asset->name, ".atlas")) {
+		return strdup ("text/plain");
+	}
+	ut8 prefix[64];
+	ut64 length = R_MIN (asset->payload_size, sizeof (prefix));
+	if (r_buf_read_at (obj->buf, asset->payload_offset, prefix, length) == (st64)length) {
+		for (ut64 i = 0; i < length; i++) {
+			if (isspace (prefix[i])) {
+				continue;
+			}
+			if (prefix[i] == '{' || prefix[i] == '[') {
+				return strdup ("application/json");
+			}
+			break;
+		}
+	}
+	return strdup ("text/plain");
+}
+
+static bool load_resources(RBinFile *bf) {
+	R2UnityBinObj *obj = get_obj (bf);
+	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
+	if (obj->kind != R2UNITY_BIN_SERIALIZED_FILE) {
+		return true;
+	}
+	ut32 index = 0;
+	for (size_t i = 0; i < obj->sf->object_count; i++) {
+		R2UnitySerializedObject *asset = &obj->sf->objects[i];
+		if (!asset->name || asset->class_id == 150) {
+			continue;
+		}
+		RBinResource *resource = RVecRBinResource_emplace_back (&bf->bo->resources_vec);
+		if (!resource) {
+			return false;
+		}
+		resource->name = strdup (asset->name);
+		resource->type = serialized_resource_type (obj, asset);
+		if (asset->stream_path) {
+			resource->origin = r_str_newf ("%s@0x%08"PFMT64x"+0x%08"PFMT64x,
+				asset->stream_path, asset->stream_offset, asset->stream_size);
+		} else {
+			resource->origin = r_str_newf ("SerializedFile.path_%"PFMT64d, asset->path_id);
+		}
+		resource->paddr = asset->payload_size? asset->payload_offset: asset->offset;
+		resource->vaddr = resource->paddr;
+		resource->size = asset->payload_size? asset->payload_size: asset->size;
+		resource->id = UT64_MAX;
+		resource->index = index++;
+		resource->type_id = asset->class_id;
+		resource->language_id = UT32_MAX;
+		resource->codepage = asset->class_id == 49? 65001: 0;
+		resource->named = true;
+		if (!resource->name || !resource->type || !resource->origin) {
+			return false;
+		}
+	}
+	return true;
+}
+#endif
+
 RBinPlugin r_bin_plugin_r2unity = {
 	.meta = {
 		.name = "r2unity",
-		.desc = "Unity IL2CPP global-metadata.dat",
+		.desc = "Unity IL2CPP metadata and SerializedFiles",
 		.author = "pancake",
 		.license = "MIT",
 	},
@@ -849,6 +1227,9 @@ RBinPlugin r_bin_plugin_r2unity = {
 	.fields = &fields,
 	.header = &header,
 	.minstrlen = 2,
+#if R2_ABIVERSION >= 121
+	.load_resources = &load_resources,
+#endif
 };
 
 #ifndef R2_PLUGIN_INCORE

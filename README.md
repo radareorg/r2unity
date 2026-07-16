@@ -22,6 +22,8 @@ IL2CPP binary, and exposes managed metadata for reverse engineering.
   SBOMs for managed assemblies.
 - Provides both a core r2 command plugin and an `r_bin` plugin for direct
   `global-metadata.dat` inspection.
+- Recognizes Unity SerializedFile v22 asset databases and exposes their
+  headers, object ranges, names, symbols, classes, dependencies, and resources.
 
 ## Build
 
@@ -99,7 +101,16 @@ r2unity-Sj     emit managed-assembly CycloneDX JSON
 Set `r2unity.metadata` and `r2unity.library` manually when auto-detection is not
 enough. The `bin_r2unity` plugin also lets radare2/rabin2 treat
 `global-metadata.dat` as a binary format, exposing sections, strings, symbols,
-classes, imports, libraries, and header fields.
+classes, imports, libraries, and header fields. It also recognizes loose Unity
+SerializedFile v22 inputs such as `sharedassets*.assets`:
+
+```sh
+rabin2 -I sharedassets10.assets
+rabin2 -S sharedassets10.assets
+rabin2 -s sharedassets10.assets
+rabin2 -U sharedassets10.assets
+rabin2 -xU sharedassets10.assets
+```
 
 ## Current Limits
 
@@ -110,5 +121,11 @@ classes, imports, libraries, and header fields.
   recover native wrapper addresses or every `DllImportAttribute` detail.
 - SBOM output covers managed assemblies only, not native dependencies or file
   hashes.
+- SerializedFile support currently targets format v22. Object naming and
+  payload decoding cover the common built-in classes needed by the reference
+  asset; arbitrary stripped type trees and managed script schemas remain to be
+  implemented.
+- Streamed `.resS` and `.resource` ranges are reported from their owner object,
+  but generic radare2 resource extraction cannot yet read bytes from a sidecar.
 
 Deep technical notes live in `doc/`.

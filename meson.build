@@ -32,6 +32,7 @@ lib_sources = files(
   'src/lib/bin/native.c',
   'src/lib/bin/pe.c',
   'src/lib/paths.c',
+  'src/lib/serialized_file.c',
   'src/lib/sbom.c',
 )
 

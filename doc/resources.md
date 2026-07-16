@@ -44,12 +44,12 @@ Consequently:
 | `global-metadata.dat` | IL2CPP managed metadata | Yes, but native address correlation needs the matching IL2CPP binary | r2unity |
 | `*.dll-resources.dat` | IL2CPP assembly manifest-resource pack | Yes | None |
 | `*.resources` | Standard binary .NET resource dictionary | Yes | Outer payload only when embedded in a PE; no entry parser |
-| `resources.assets` | Serialized assets originating in project `Resources` directories | Mostly; large payloads can be in sidecars | None |
-| `sharedassets*.assets` | Serialized assets shared by scenes | Mostly; large payloads can be in sidecars | None |
-| `globalgamemanagers.assets` | Assets referenced by global engine/project settings | Mostly; large payloads can be in sidecars | None |
-| `level*`, `CAB-*`, `*.sharedAssets` | Other Unity SerializedFiles | Mostly; may reference sidecars and other SerializedFiles | None |
-| `*.resS` | Raw streamed texture and mesh data | No; the owner supplies offsets, sizes, types, and names | None |
-| `*.resource` | Raw streamed audio and video data | Usually no; the owner supplies offsets, sizes, types, and names | None |
+| `resources.assets` | Serialized assets originating in project `Resources` directories | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
+| `sharedassets*.assets` | Serialized assets shared by scenes | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
+| `globalgamemanagers.assets` | Assets referenced by global engine/project settings | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
+| `level*`, `CAB-*`, `*.sharedAssets` | Other Unity SerializedFiles | Mostly; may reference sidecars and other SerializedFiles | r2unity SerializedFile v22 baseline |
+| `*.resS` | Raw streamed texture and mesh data | No; the owner supplies offsets, sizes, types, and names | Owner references reported; sidecar parsing pending |
+| `*.resource` | Raw streamed audio and video data | Usually no; the owner supplies offsets, sizes, types, and names | Owner references reported; sidecar parsing pending |
 | `data.unity3d`, `*.bundle` | Unity archive containing SerializedFiles and sidecars | Yes as a container | None |
 | Addressables `catalog.bin` / `catalog.json` | Key-to-location and dependency mapping | No; it points at bundles and providers | None |
 | Addressables `catalog.hash` | Catalog version/update fingerprint | No | None |
@@ -174,6 +174,37 @@ An `RBinResource` for a Unity asset should carry:
 - a stable index and, where useful, the path ID
 
 Objects with bytes in a sidecar need special handling described in section 4.
+
+### 3.5 Implemented v22 baseline and reference file
+
+`bin_r2unity` now identifies loose SerializedFile format v22 inputs by their
+extended header and validates the declared metadata size, file size, data
+offset, endianness, and Unity version string before accepting the file. The
+parser is implemented in `src/lib/serialized_file.c` using bounded `RBuffer`
+reads.
+
+For the `sharedassets10.assets` reference file, it recovers:
+
+- Unity `2020.3.33f1`, little endian, platform 19, with a stripped type tree
+- 8 serialized types, 18 objects, 2 script references, and 4 external files
+- `Material`, `Texture2D`, two `TextAsset` objects, ten `AnimationClip`
+  objects, an `AnimatorController`, two `MonoBehaviour` objects, and
+  `PreloadData`
+- the inline 348-byte Spine atlas and 12,931-byte JSON skeleton payloads
+- a 1695 by 195 RGBA32 `Texture2D` whose 1,322,100 data bytes are stored at
+  offset zero in `sharedassets10.assets.resS`
+
+The bin plugin exposes the fixed header, metadata, alignment padding, data
+area, and every object as sections; objects and inline `TextAsset` payloads as
+symbols; serialized types as classes; header/object descriptors as fields;
+object names and external paths as strings; external SerializedFiles as
+libraries; and named objects through `RBinResource`.
+
+This is deliberately a v22 baseline, not a claim of universal SerializedFile
+support. Built-in object names are recovered from known layouts, and the
+`Texture2D` and `TextAsset` decoders cover the layouts exercised by this
+reference file. Other format versions, interpreted type trees, more built-in
+classes, and managed `MonoBehaviour` schemas still require versioned decoders.
 
 ## 4. Streamed sidecars: `.resS` and `.resource`
 
@@ -742,10 +773,12 @@ in the string API and must not all become resources.
 
 ### 14.1 r2unity today
 
-The current `bin_r2unity` plugin recognizes only the IL2CPP
-`global-metadata.dat` sanity value and version. It exposes metadata sections,
-strings, symbols, imports, classes, fields, and header information. It has no
-`load_resources` callback.
+The current `bin_r2unity` plugin recognizes both IL2CPP
+`global-metadata.dat` and Unity SerializedFile v22. The metadata path exposes
+metadata sections, strings, symbols, imports, classes, fields, and header
+information. The SerializedFile path exposes structural sections, object and
+payload symbols, type classes, fields, strings, external dependencies, header
+information, and named objects through `load_resources`.
 
 Companion discovery currently locates:
 
@@ -754,8 +787,9 @@ Companion discovery currently locates:
 - `global-metadata.dat`
 - the Player Data directory
 
-It does not enumerate `Managed/Resources`, loose SerializedFiles, UnityFS
-archives, sidecars, or Addressables content.
+Companion discovery does not yet enumerate `Managed/Resources`, loose
+SerializedFiles, UnityFS archives, sidecars, or Addressables content. A loose
+v22 SerializedFile can nevertheless be opened directly by r2 or rabin2.
 
 The existing documentation correctly states that Unity asset, scene, prefab,
 and AssetBundle data is not stored in `global-metadata.dat`.
@@ -769,19 +803,18 @@ radare2 provides the generic resource API and commands, and currently exposes:
 - resources from plugins that implement `load_resources`, such as the
   Pebble resource-pack plugin and r2hermes when installed
 
-No current parser was found for:
+No parser in radare2 core was found for:
 
 - UnityFS
-- Unity SerializedFiles
 - Unity `.resS` or `.resource` sidecars
 - IL2CPP `*.dll-resources.dat`
 - nested/standalone .NET `.resources` entries
 - standalone Windows `.res`
 
-Running the current `rabin2 -U` on the available
-`mscorlib.dll-resources.dat` and `resources.assets` fixtures produces no
-resource entries, confirming that the gap is parser implementation rather
-than command wiring.
+The out-of-tree r2unity plugin now fills this gap for SerializedFile v22.
+Running core radare2 without that plugin still produces no Unity asset
+resources, confirming that generic command wiring and format parsing are
+separate concerns.
 
 ## 15. Implementation roadmap
 
@@ -838,20 +871,20 @@ literals remain strings.
 
 ### Stage 4: Unity SerializedFile library and bin plugin
 
-Implement versioned parsing for:
+The v22 structural baseline is implemented: bounded header/metadata parsing,
+serialized types, object records, script and external references, sections,
+symbols, classes, fields, strings, libraries, common names, `TextAsset`
+payloads, `Texture2D` stream information, and `RBinResource` records.
 
-- headers and endianness
-- metadata and type trees
-- serialized types and class IDs
-- object table and path IDs
-- script types
-- external references
-- reference types and newer metadata additions
-- object names and common built-in object layouts
+Continue with versioned parsing for:
 
-Expose structure through sections, fields, symbols, classes, and resources.
-Start with loose current-version `.assets` fixtures, then expand across Unity
-versions.
+- older and newer SerializedFile headers and metadata additions
+- interpreted type trees rather than structural skipping
+- a broader versioned database of built-in object layouts
+- managed `MonoBehaviour` and `ScriptableObject` schemas
+
+Expand the current loose `.assets` support across Unity versions before using
+it recursively inside UnityFS archives.
 
 ### Stage 5: external sidecar resource access in radare2
 
@@ -868,9 +901,9 @@ Requirements include:
 
 ### Stage 6: `.resS` and `.resource` resolution in r2unity
 
-Decode streaming references for common classes and map them to sidecars:
+The v22 `Texture2D` stream reference is now reported. Continue decoding
+references for common classes and map them to sidecars:
 
-- Texture2D
 - Mesh
 - AudioClip
 - VideoClip
@@ -967,17 +1000,20 @@ Unity-specific parsers can remain out-of-tree in r2unity while maturing. Only
 generic APIs and formats shared with non-Unity binaries need to enter radare2
 core.
 
-## 18. Practical first milestone
+## 18. Practical next milestone
 
-The smallest useful milestone is:
+After the SerializedFile v22 baseline, the next useful milestone is:
 
 1. add `bin_r2unity_resources` for `*.dll-resources.dat`
 2. populate `RBinResource` records with name, origin, offset, size, and type
 3. test `iU`, `iUj`, and `iUx` on the existing resource-pack fixtures
-4. add the optional document/data-URI classifier to managed literals
-5. implement generic `.resources` parsing in radare2 next
+4. add fixture-backed SerializedFile versions around v22 and more built-in
+   object decoders
+5. add the optional document/data-URI classifier to managed literals
+6. implement generic `.resources` parsing in radare2 next
 
 This produces immediate resource visibility without pretending that raw
 `.resS`, arbitrary `.dat` saves, or full Unity object serialization are the
 same problem. SerializedFile and UnityFS support can then grow on top of a
-clear container/resource abstraction.
+clear container/resource abstraction. The current v22 implementation provides
+that initial object-database layer.
