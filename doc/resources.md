@@ -48,8 +48,8 @@ Consequently:
 | `sharedassets*.assets` | Serialized assets shared by scenes | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
 | `globalgamemanagers.assets` | Assets referenced by global engine/project settings | Mostly; large payloads can be in sidecars | r2unity SerializedFile v22 baseline |
 | `level*`, `CAB-*`, `*.sharedAssets` | Other Unity SerializedFiles | Mostly; may reference sidecars and other SerializedFiles | r2unity SerializedFile v22 baseline |
-| `*.resS` | Raw streamed texture and mesh data | No; the owner supplies offsets, sizes, types, and names | Owner references reported; sidecar parsing pending |
-| `*.resource` | Raw streamed audio and video data | Usually no; the owner supplies offsets, sizes, types, and names | Owner references reported; sidecar parsing pending |
+| `*.resS` | Raw streamed texture and mesh data | No; the owner supplies offsets, sizes, types, and names | Sibling sidecar ranges listed and extractable through their owner |
+| `*.resource` | Raw streamed audio and video data | Usually no; the owner supplies offsets, sizes, types, and names | Sibling sidecar ranges listed and extractable through their owner |
 | `data.unity3d`, `*.bundle` | Unity archive containing SerializedFiles and sidecars | Yes as a container | None |
 | Addressables `catalog.bin` / `catalog.json` | Key-to-location and dependency mapping | No; it points at bundles and providers | None |
 | Addressables `catalog.hash` | Catalog version/update fingerprint | No | None |
@@ -202,10 +202,12 @@ object names and external paths as strings; external SerializedFiles as
 libraries; and named objects through `RBinResource`.
 
 This is deliberately a v22 baseline, not a claim of universal SerializedFile
-support. Built-in object names are recovered from known layouts, and the
-`Texture2D` and `TextAsset` decoders cover the layouts exercised by this
-reference file. Other format versions, interpreted type trees, more built-in
-classes, and managed `MonoBehaviour` schemas still require versioned decoders.
+support. Built-in object names are recovered from known layouts. `TextAsset`,
+`Texture2D`, `Mesh`, `AudioClip`, and `VideoClip` have conservative payload or
+stream-reference decoders; the fixture corpus directly exercises text,
+texture, and audio records. Other format versions, interpreted type trees,
+more built-in classes, and managed `MonoBehaviour` schemas still require
+versioned decoders.
 
 ## 4. Streamed sidecars: `.resS` and `.resource`
 
@@ -241,28 +243,51 @@ Opening a `.resource` file independently may reveal a recognizable inner
 container, but that does not replace the Unity object metadata needed to map
 the bytes back to `AudioClip` or `VideoClip` objects.
 
-### 4.3 Why the current r2 resource API is insufficient for sidecars
+### 4.3 Implemented external-resource data path
 
-`r_bin_file_get_resource_data()` currently obtains resource bytes by slicing
-`resource->paddr .. resource->paddr + resource->size` from the current
-`RBinFile` buffer. The `origin` member is descriptive metadata and is not
-consulted for extraction.
+radare2 now gives `RBinPlugin` an optional `get_resource_data` callback. When
+present, `r_bin_file_get_resource_data()` asks the plugin for a caller-owned
+raw `RBuffer`; generic decoding and safe extraction still happen in radare2.
+Plugins without the callback retain the original current-file slice behavior.
+A callback failure is authoritative and does not fall back to slicing the
+owner file at an unrelated sidecar offset.
 
-That model works for inline objects and `*.dll-resources.dat`, but not when a
-resource listed while `resources.assets` is open resides in
-`resources.assets.resS`.
+`bin_r2unity` uses this callback while keeping one bin plugin. It resolves the
+basename of a `.resS` or `.resource` reference beside the owning loose
+SerializedFile, opens each distinct sidecar once, retains it for the bin
+object lifetime, checks every offset and size against the sidecar, and stores
+an exact slice for each `RBinResource`. Inline SerializedFile and IL2CPP-pack
+resources use the same callback-backed path, preserving their existing
+extraction behavior.
 
-Possible solutions are:
+The owner object still supplies the name and Unity class. `RBinResource.paddr`
+and `size` describe the range inside the sidecar, while `origin` includes the
+referenced path, offset, and size. Sidecar bytes are available through `iUx`
+without changing the current seek or opening another bin plugin.
 
-1. Add an optional `RBinPlugin` callback that returns an `RBuffer` for a
-   resource, falling back to the current-file slice when absent.
-2. Represent sidecars as separate logical `RBinFile` objects and make the
-   owning object graph point to them.
-3. Mount the entire Unity deployment or UnityFS archive as a filesystem and
-   resolve stream paths through that mount.
+This loose-file resolver intentionally uses a sibling basename, so absolute
+paths and path traversal from untrusted assets are not followed. Archive paths
+will instead require a UnityFS filesystem/member resolver. Representing
+sidecars as logical files or mounting a complete Unity deployment remains
+useful future work for navigation, but is no longer required for extraction.
 
-The first option is the smallest generic radare2 enhancement. The second and
-third remain useful for navigation and container analysis.
+### 4.4 Implemented class layouts and fixtures
+
+The v22 parser recognizes both observed stream descriptor families:
+
+```text
+Texture2D / Mesh:  u64 offset, u32 size, aligned string path
+AudioClip / VideoClip: aligned string path, u64 offset, u64 size
+```
+
+The path must end in `.resS` or `.resource`, all reads are bounded by the
+owning object, and zero-sized ranges are ignored. `sharedassets10.assets`
+provides the Texture2D reference described in section 3.5, although its
+sidecar is not present in `/tmp`. A local Unity `6000.4.5f1` iOS build provides
+a complete fixture pair: 35 streamed Texture2D resources in
+`sharedassets0.assets.resS` and nine AudioClip resources in
+`sharedassets0.resource`. Extracted zero- and nonzero-offset samples compare
+byte-for-byte with their source sidecar ranges.
 
 ## 5. UnityFS, `data.unity3d`, and AssetBundles
 
@@ -472,8 +497,8 @@ The fixture corpus currently covers:
 - six icon resources from `System.Drawing.dll-resources.dat`
 - seven binary collation resources from `mscorlib.dll-resources.dat`
 
-All payloads are inline, so generic `iU`, `iUj`, and `iUx` extraction works
-without the external-sidecar API needed by `.resS` and `.resource`.
+All payloads are inline. They now use the same plugin resource-data callback
+as external sidecars, and `iU`, `iUj`, and `iUx` behavior is unchanged.
 
 ## 7. Standard .NET `.resources`
 
@@ -780,7 +805,11 @@ members include:
 
 A bin plugin implements `load_resources(RBinFile *bf)` and appends entries to
 `bf->bo->resources_vec`. Loading is lazy and cached. The generic extractor
-validates that an inline range fits within the current file.
+validates that an inline range fits within the current file. Since ABI 123, a
+plugin can additionally implement
+`get_resource_data(RBinFile *, const RBinResource *)` for external or virtual
+data. The returned raw buffer belongs to the caller; radare2 applies any
+declared resource decoding after the callback returns.
 
 Supported generic `encoding` transformations currently include raw data,
 base64, data URIs, gzip/zlib, LZ4, and UTF-16 variants. `encoding` describes
@@ -865,16 +894,19 @@ radare2 provides the generic resource API and commands, and currently exposes:
 - resources from plugins that implement `load_resources`, such as the
   Pebble resource-pack plugin and r2hermes when installed
 
-No parser in radare2 core was found for:
+No format parser in radare2 core was found for:
 
 - UnityFS
-- Unity `.resS` or `.resource` sidecars
+- Unity SerializedFiles or the object references that describe `.resS` and
+  `.resource` ranges
 - IL2CPP `*.dll-resources.dat`
 - nested/standalone .NET `.resources` entries
 - standalone Windows `.res`
 
-The out-of-tree r2unity plugin now fills this gap for SerializedFile v22 and
-IL2CPP manifest-resource packs.
+The out-of-tree r2unity plugin now fills this gap for SerializedFile v22,
+sibling `.resS`/`.resource` resolution, and IL2CPP manifest-resource packs.
+radare2 supplies the generic external-resource callback, not Unity-specific
+sidecar parsing.
 Running core radare2 without that plugin still produces no Unity asset
 resources, confirming that generic command wiring and format parsing are
 separate concerns.
@@ -950,28 +982,24 @@ it recursively inside UnityFS archives.
 
 ### Stage 5: external sidecar resource access in radare2
 
-Add a plugin-level resource-data resolver or equivalent abstraction so that a
-resource owned by one `RBinFile` can return bytes from a companion buffer.
+Implemented with `RBinPlugin.get_resource_data`. The implementation provides:
 
-Requirements include:
-
-- safe path resolution relative to the deployment/archive
+- safe sibling path resolution for loose-file deployments
 - retaining or reopening companion buffers safely
 - offset/size bounds checks against the sidecar
 - showing the real origin in `iU`/JSON
 - extraction without changing the current seek/file
 
+The generic radare2 callback and fallback behavior have a focused unit test.
+Archive-member resolution remains a future consumer of the same API.
+
 ### Stage 6: `.resS` and `.resource` resolution in r2unity
 
-The v22 `Texture2D` stream reference is now reported. Continue decoding
-references for common classes and map them to sidecars:
-
-- Mesh
-- AudioClip
-- VideoClip
-- other version-specific streamed data objects
-
-Initially expose raw slices. Codec-specific plugins such as FSB5 can be added
+The loose-file baseline is implemented for `Texture2D`, `Mesh`, `AudioClip`,
+and `VideoClip` stream descriptors. References are mapped to cached sibling
+sidecars and exposed as raw `RBinResource` slices. Texture and audio extraction
+is fixture-tested; Mesh and VideoClip still need representative fixtures and
+version coverage. Codec-specific plugins such as FSB5 can be added
 independently or invoked on extracted buffers.
 
 ### Stage 7: UnityFS extraction or mounting
@@ -1067,12 +1095,11 @@ core.
 After the SerializedFile v22 baseline, the next useful milestone is:
 
 1. add fixture-backed SerializedFile versions around v22 and more built-in
-   object decoders
+   object decoders, especially Mesh and VideoClip samples
 2. add the optional document/data-URI classifier to managed literals
 3. implement generic `.resources` parsing in radare2 next
 
-This produces immediate resource visibility without pretending that raw
-`.resS`, arbitrary `.dat` saves, or full Unity object serialization are the
-same problem. SerializedFile and UnityFS support can then grow on top of a
-clear container/resource abstraction. The current v22 implementation provides
-that initial object-database layer.
+This builds on working loose `.resS`/`.resource` extraction without pretending
+that raw sidecars, arbitrary `.dat` saves, or full Unity object serialization
+are the same problem. SerializedFile and UnityFS support can continue growing
+on top of the generic resource-buffer abstraction.

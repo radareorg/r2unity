@@ -34,12 +34,21 @@ typedef enum {
 } R2UnityBinKind;
 
 typedef struct {
+	char *path;
+	RBuffer *buf;
+} R2UnitySidecar;
+
+typedef struct {
 	R2UnityBinKind kind;
 	R2UnityMetadata *meta;
 	R2UnitySerializedFile *sf;
 	R2UnityBGDatabase *bgdb;
 	R2UnityResourcePack *resource_pack;
 	char *resource_origin;
+	RBuffer **resource_data;
+	size_t resource_data_count;
+	R2UnitySidecar *sidecars;
+	size_t sidecar_count;
 	RBuffer *buf;
 	Sdb *kv;
 	ut8 *strings;
@@ -49,6 +58,36 @@ typedef struct {
 static R2UnityBinObj *get_obj(RBinFile *bf) {
 	RBinObject *o = bf? bf->bo: NULL;
 	return o? (R2UnityBinObj *)o->bin_obj: NULL;
+}
+
+static void clear_resource_data(R2UnityBinObj *obj) {
+	if (!obj) {
+		return;
+	}
+	for (size_t i = 0; i < obj->resource_data_count; i++) {
+		r_unref (obj->resource_data[i]);
+	}
+	R_FREE (obj->resource_data);
+	obj->resource_data_count = 0;
+	for (size_t i = 0; i < obj->sidecar_count; i++) {
+		free (obj->sidecars[i].path);
+		r_unref (obj->sidecars[i].buf);
+	}
+	R_FREE (obj->sidecars);
+	obj->sidecar_count = 0;
+}
+
+static bool prepare_resource_data(R2UnityBinObj *obj, size_t count) {
+	clear_resource_data (obj);
+	if (!count) {
+		return true;
+	}
+	obj->resource_data = R_NEWS0 (RBuffer *, count);
+	if (!obj->resource_data) {
+		return false;
+	}
+	obj->resource_data_count = count;
+	return true;
 }
 
 static bool resource_pack_filename(const char *path) {
@@ -139,6 +178,7 @@ static void fill_metadata_sdb(R2UnityBinObj *obj) {
 	R2UnityMetadata *meta = obj->meta;
 	sdb_num_set (kv, "version", (ut64)meta->version, 0);
 	sdb_set (kv, "unity_range", r2unity_unity_range_from_wire (meta->version), 0);
+	sdb_num_set (kv, "header.offset", 0, 0);
 	sdb_num_set (kv, "header.size", r2unity_metadata_header_size (meta), 0);
 	for (int i = 0; i < R2UNITY_METADATA_SECTION_COUNT; i++) {
 		Il2CppMetadataSection sec;
@@ -175,6 +215,7 @@ static void fill_serialized_file_sdb(R2UnityBinObj *obj) {
 	sdb_num_set (kv, "target_platform", (ut64)(st64)sf->target_platform, 0);
 	sdb_num_set (kv, "big_endian", sf->big_endian, 0);
 	sdb_num_set (kv, "type_tree", sf->enable_type_tree, 0);
+	sdb_num_set (kv, "header.offset", 0, 0);
 	sdb_num_set (kv, "header.size", sf->header_size, 0);
 	sdb_num_set (kv, "metadata.offset", sf->header_size, 0);
 	sdb_num_set (kv, "metadata.size", sf->metadata_size, 0);
@@ -366,6 +407,7 @@ static void destroy(RBinFile *bf) {
 	r2unity_bgdatabase_free (obj->bgdb);
 	r2unity_resource_pack_free (obj->resource_pack);
 	free (obj->resource_origin);
+	clear_resource_data (obj);
 	r_unref (obj->buf);
 	R_FREE (obj->strings);
 	free (obj);
@@ -1621,6 +1663,67 @@ static char *header(RBinFile *bf, int mode) {
 }
 
 #if R2_ABIVERSION >= 121
+static RBuffer *cached_sidecar(R2UnityBinObj *obj, char *path) {
+	for (size_t i = 0; i < obj->sidecar_count; i++) {
+		if (!strcmp (obj->sidecars[i].path, path)) {
+			free (path);
+			return obj->sidecars[i].buf;
+		}
+	}
+	RBuffer *buf = r_buf_new_file (path, O_RDONLY, 0);
+	if (!buf) {
+		free (path);
+		return NULL;
+	}
+	R2UnitySidecar *sidecars = realloc (obj->sidecars,
+		(obj->sidecar_count + 1) * sizeof (*sidecars));
+	if (!sidecars) {
+		free (path);
+		r_unref (buf);
+		return NULL;
+	}
+	obj->sidecars = sidecars;
+	obj->sidecars[obj->sidecar_count++] = (R2UnitySidecar) {
+		.path = path,
+		.buf = buf,
+	};
+	return buf;
+}
+
+static RBuffer *serialized_sidecar_data(RBinFile *bf,
+		R2UnityBinObj *obj, const R2UnitySerializedObject *asset) {
+	if (!bf->file || !asset->stream_path || !asset->stream_size) {
+		return NULL;
+	}
+	const char *basename = r_file_basename (asset->stream_path);
+	if (R_STR_ISEMPTY (basename)
+		|| (!r_str_endswith (basename, ".resS")
+			&& !r_str_endswith (basename, ".resource"))) {
+		return NULL;
+	}
+	char *owner_path = r_file_abspath (bf->file);
+	char *directory = owner_path? r_file_dirname (owner_path): NULL;
+	char *sidecar_path = directory
+		? r_str_newf ("%s%s%s", directory, R_SYS_DIR, basename)
+		: NULL;
+	free (directory);
+	free (owner_path);
+	if (!sidecar_path) {
+		return NULL;
+	}
+	RBuffer *sidecar = cached_sidecar (obj, sidecar_path);
+	if (!sidecar) {
+		return NULL;
+	}
+	ut64 sidecar_size = r_buf_size (sidecar);
+	if (asset->stream_offset > sidecar_size
+		|| asset->stream_size > sidecar_size - asset->stream_offset) {
+		return NULL;
+	}
+	return r_buf_new_slice (sidecar, asset->stream_offset,
+		asset->stream_size);
+}
+
 static bool resource_name_endswith(const char *name, const char *suffix) {
 	size_t name_length = strlen (name);
 	size_t suffix_length = strlen (suffix);
@@ -1704,8 +1807,13 @@ static bool load_resources(RBinFile *bf) {
 	R2UnityBinObj *obj = get_obj (bf);
 	R_RETURN_VAL_IF_FAIL (bf && bf->bo && obj, false);
 	if (obj->kind == R2UNITY_BIN_RESOURCE_PACK) {
+		if (!prepare_resource_data (obj, obj->resource_pack->entry_count)) {
+			return false;
+		}
 		for (size_t i = 0; i < obj->resource_pack->entry_count; i++) {
 			R2UnityResourcePackEntry *entry = &obj->resource_pack->entries[i];
+			obj->resource_data[i] = r_buf_new_slice (obj->buf,
+				entry->payload_offset, entry->payload_size);
 			RBinResource *resource = RVecRBinResource_emplace_back (
 				&bf->bo->resources_vec);
 			if (!resource) {
@@ -1729,7 +1837,11 @@ static bool load_resources(RBinFile *bf) {
 		return true;
 	}
 	if (obj->kind != R2UNITY_BIN_SERIALIZED_FILE) {
+		clear_resource_data (obj);
 		return true;
+	}
+	if (!prepare_resource_data (obj, obj->sf->object_count)) {
+		return false;
 	}
 	ut32 index = 0;
 	for (size_t i = 0; i < obj->sf->object_count; i++) {
@@ -1749,9 +1861,19 @@ static bool load_resources(RBinFile *bf) {
 		} else {
 			resource->origin = r_str_newf ("SerializedFile.path_%"PFMT64d, asset->path_id);
 		}
-		resource->paddr = asset->payload_size? asset->payload_offset: asset->offset;
+		if (asset->stream_path) {
+			resource->paddr = asset->stream_offset;
+			resource->size = asset->stream_size;
+			obj->resource_data[index] = serialized_sidecar_data (bf, obj, asset);
+		} else {
+			resource->paddr = asset->payload_size
+				? asset->payload_offset: asset->offset;
+			resource->size = asset->payload_size
+				? asset->payload_size: asset->size;
+			obj->resource_data[index] = r_buf_new_slice (obj->buf,
+				resource->paddr, resource->size);
+		}
 		resource->vaddr = resource->paddr;
-		resource->size = asset->payload_size? asset->payload_size: asset->size;
 		resource->id = UT64_MAX;
 		resource->index = index++;
 		resource->type_id = asset->class_id;
@@ -1764,6 +1886,18 @@ static bool load_resources(RBinFile *bf) {
 	}
 	return true;
 }
+
+#if R2_ABIVERSION >= 123
+static RBuffer *get_resource_data(RBinFile *bf,
+		const RBinResource *resource) {
+	R2UnityBinObj *obj = get_obj (bf);
+	if (!obj || resource->index >= obj->resource_data_count) {
+		return NULL;
+	}
+	RBuffer *data = obj->resource_data[resource->index];
+	return data? r_buf_new_slice (data, 0, r_buf_size (data)): NULL;
+}
+#endif
 #endif
 
 RBinPlugin r_bin_plugin_r2unity = {
@@ -1797,6 +1931,9 @@ RBinPlugin r_bin_plugin_r2unity = {
 	.minstrlen = 2,
 #if R2_ABIVERSION >= 121
 	.load_resources = &load_resources,
+#endif
+#if R2_ABIVERSION >= 123
+	.get_resource_data = &get_resource_data,
 #endif
 };
 

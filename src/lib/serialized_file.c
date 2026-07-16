@@ -227,16 +227,22 @@ const char *r2unity_serialized_class_name(st32 class_id) {
 		return "Material";
 	case 28:
 		return "Texture2D";
+	case 43:
+		return "Mesh";
 	case 49:
 		return "TextAsset";
 	case 74:
 		return "AnimationClip";
+	case 83:
+		return "AudioClip";
 	case 91:
 		return "AnimatorController";
 	case 114:
 		return "MonoBehaviour";
 	case 150:
 		return "PreloadData";
+	case 328:
+		return "VideoClip";
 	default:
 		return "Object";
 	}
@@ -246,17 +252,92 @@ static bool class_has_name(st32 class_id) {
 	switch (class_id) {
 	case 21:
 	case 28:
+	case 43:
 	case 49:
 	case 74:
+	case 83:
 	case 91:
 	case 150:
+	case 328:
 		return true;
 	default:
 		return false;
 	}
 }
 
-static void parse_texture_info(R2UnitySerializedFile *sf, R2UnitySerializedObject *object, ut64 after_name) {
+static char *read_sidecar_path(const R2UnitySerializedFile *sf, ut64 offset,
+		ut32 size) {
+	char *path = R_NEWS (char, (ut64)size + 1);
+	if (!path || r_buf_read_at (sf->buf, offset, (ut8 *)path, size) != size) {
+		free (path);
+		return NULL;
+	}
+	path[size] = 0;
+	if (memchr (path, 0, size)
+		|| (!r_str_endswith (path, ".resS")
+			&& !r_str_endswith (path, ".resource"))) {
+		free (path);
+		return NULL;
+	}
+	return path;
+}
+
+static void parse_stream_info(R2UnitySerializedFile *sf,
+		R2UnitySerializedObject *object, ut64 after_name) {
+	ut64 end = object->offset + object->size;
+	/* Texture2D/Mesh StreamingInfo: u64 offset, u32 size, string path. */
+	for (ut64 at = after_name; at <= end && end - at >= 16; at += 4) {
+		ut64 stream_offset = buffer_u64 (sf, at);
+		ut32 stream_size = buffer_u32 (sf, at + 8);
+		ut32 path_size = buffer_u32 (sf, at + 12);
+		ut64 path_offset = at + 16;
+		if (!stream_size || !path_size || path_size > R2U_MAX_STRING
+			|| path_offset > end || path_size > end - path_offset) {
+			continue;
+		}
+		ut64 aligned_end = R_ROUND (path_offset + path_size, 4);
+		if (aligned_end != end) {
+			continue;
+		}
+		char *path = read_sidecar_path (sf, path_offset, path_size);
+		if (path) {
+			object->stream_path = path;
+			object->stream_offset = stream_offset;
+			object->stream_size = stream_size;
+			return;
+		}
+	}
+
+	/* AudioClip/VideoClip resource: string path, u64 offset, u64 size. */
+	for (ut64 at = after_name; at <= end && end - at >= 20; at += 4) {
+		ut32 path_size = buffer_u32 (sf, at);
+		ut64 path_offset = at + 4;
+		if (!path_size || path_size > R2U_MAX_STRING
+			|| path_offset > end || path_size > end - path_offset) {
+			continue;
+		}
+		ut64 stream_info = R_ROUND (path_offset + path_size, 4);
+		if (stream_info < path_offset || stream_info > end
+			|| end - stream_info < 16) {
+			continue;
+		}
+		ut64 stream_offset = buffer_u64 (sf, stream_info);
+		ut64 stream_size = buffer_u64 (sf, stream_info + 8);
+		if (!stream_size) {
+			continue;
+		}
+		char *path = read_sidecar_path (sf, path_offset, path_size);
+		if (path) {
+			object->stream_path = path;
+			object->stream_offset = stream_offset;
+			object->stream_size = stream_size;
+			return;
+		}
+	}
+}
+
+static void parse_texture_info(R2UnitySerializedFile *sf,
+		R2UnitySerializedObject *object, ut64 after_name) {
 	ut64 end = object->offset + object->size;
 	if (after_name <= end && end - after_name >= 28) {
 		object->width = buffer_u32 (sf, after_name + 8);
@@ -264,33 +345,7 @@ static void parse_texture_info(R2UnitySerializedFile *sf, R2UnitySerializedObjec
 		object->texture_format = (st32)buffer_u32 (sf, after_name + 24);
 		object->has_texture_info = object->width > 0 && object->height > 0;
 	}
-	for (ut64 at = after_name; at <= end && end - at >= 16; at += 4) {
-		ut64 stream_offset = buffer_u64 (sf, at);
-		ut32 stream_size = buffer_u32 (sf, at + 8);
-		ut32 path_size = buffer_u32 (sf, at + 12);
-		ut64 path_offset = at + 16;
-		if (!path_size || path_size > R2U_MAX_STRING || path_offset > end || path_size > end - path_offset) {
-			continue;
-		}
-		ut64 aligned_end = R_ROUND (path_offset + path_size, 4);
-		if (aligned_end != end) {
-			continue;
-		}
-		char *path = R_NEWS (char, (ut64)path_size + 1);
-		if (!path || r_buf_read_at (sf->buf, path_offset, (ut8 *)path, path_size) != path_size) {
-			free (path);
-			continue;
-		}
-		path[path_size] = 0;
-		if (!strstr (path, ".resS") && !strstr (path, ".resource")) {
-			free (path);
-			continue;
-		}
-		object->stream_path = path;
-		object->stream_offset = stream_offset;
-		object->stream_size = stream_size;
-		return;
-	}
+	parse_stream_info (sf, object, after_name);
 }
 
 static bool parse_object_details(R2UnitySerializedFile *sf, R2UnitySerializedObject *object) {
@@ -328,6 +383,9 @@ static bool parse_object_details(R2UnitySerializedFile *sf, R2UnitySerializedObj
 		object->payload_size = payload_size;
 	} else if (object->class_id == 28) {
 		parse_texture_info (sf, object, after_name);
+	} else if (object->class_id == 43 || object->class_id == 83
+		|| object->class_id == 328) {
+		parse_stream_info (sf, object, after_name);
 	}
 	return true;
 }

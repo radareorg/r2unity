@@ -26,6 +26,8 @@ IL2CPP binary, and exposes managed metadata for reverse engineering.
   radare2's resource listing and extraction APIs.
 - Recognizes Unity SerializedFile v22 asset databases and exposes their
   headers, object ranges, names, symbols, classes, dependencies, and resources.
+- Resolves bounded `Texture2D`/`Mesh` `.resS` and `AudioClip`/`VideoClip`
+  `.resource` ranges beside loose SerializedFiles for `iU`/`iUx` extraction.
 - Recognizes BGDatabase v6 repositories and whole-database saves, including
   addon payloads, table regions, fields, symbols, and validated UTF-8 values.
 
@@ -116,6 +118,11 @@ rabin2 -U sharedassets10.assets
 rabin2 -xU sharedassets10.assets
 ```
 
+Streamed resources are extracted when the referenced `.resS` or `.resource`
+file is beside its owning SerializedFile. Missing sidecars remain visible in
+`-U` output, but extraction fails safely instead of reading the same offset
+from the `.assets` file.
+
 BGDatabase repositories and saves produced by `BGRepo.I.Save()` are handled by
 the same `r2unity` bin plugin:
 
@@ -147,8 +154,9 @@ rabin2 -xU -o extracted System.Drawing.dll-resources.dat
   payload decoding cover the common built-in classes needed by the reference
   asset; arbitrary stripped type trees and managed script schemas remain to be
   implemented.
-- Streamed `.resS` and `.resource` ranges are reported from their owner object,
-  but generic radare2 resource extraction cannot yet read bytes from a sidecar.
+- Loose sibling `.resS` and `.resource` extraction is supported for the known
+  v22 stream layouts. Archive-member paths and other version-specific object
+  layouts still require UnityFS and additional class fixtures.
 - BGDatabase support currently targets the structurally validated v6 layout.
   It exposes unknown proprietary field payloads as table sections until more
   field types and format versions are recovered from additional fixtures.
