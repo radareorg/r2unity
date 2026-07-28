@@ -8,6 +8,12 @@
 
 #define R2UNITY_NATIVE_TARGET_LIMIT 0x10000
 
+#if R2_ABIVERSION >= 125
+R_API void r_core_cmd_help(const RCore *core, RCoreHelpMessage help) {
+	r_cons_cmd_help(core->cons, help);
+}
+#endif
+
 // clang-format off
 static const char *g_help_msg[] = {
 	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
