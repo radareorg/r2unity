@@ -1225,7 +1225,7 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 
 	/* "r2unity" alone, or "r2unity?" */
 	if (*rest == 0 || *rest == '?') {
-		r_core_cmd_help (core, g_help_msg);
+		r_cons_cmd_help (core->cons, g_help_msg);
 		return true;
 	}
 	if (*rest != '-') {
@@ -1243,7 +1243,7 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 			rest++;
 		}
 		if (*rest && *rest != ' ' && *rest != '\t') {
-			r_core_cmd_help (core, g_help_msg);
+			r_cons_cmd_help (core->cons, g_help_msg);
 			return true;
 		}
 	}
@@ -1270,10 +1270,10 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 		return cmd_sbom (core, mode) == 0;
 	case '?':
 	case 'h':
-		r_core_cmd_help (core, g_help_msg);
+		r_cons_cmd_help (core->cons, g_help_msg);
 		return true;
 	default:
-		r_core_cmd_help (core, g_help_msg);
+		r_cons_cmd_help (core->cons, g_help_msg);
 		return true;
 	}
 }
