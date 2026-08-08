@@ -17,8 +17,26 @@ add_project_arguments(
   language: 'c',
 )
 
-r_util_dep = dependency('r_util')
-r_bin_dep = dependency('r_bin')
+r2 = find_program('r2', required: true)
+r2_cflags = run_command(r2, '-H', 'R2_CFLAGS', check: true).stdout().strip().split()
+r2_ldflags = run_command(r2, '-H', 'R2_LDFLAGS', check: true).stdout().strip().split()
+r2_libs = run_command(r2, '-H', 'R2_LIBS', check: true).stdout().strip().split()
+r2_fallback_dep = declare_dependency(
+  compile_args: r2_cflags,
+  link_args: r2_ldflags + r2_libs,
+)
+
+# Windows release ZIPs are relocatable and are not registered with pkg-config.
+# Fall back to the paths reported by r2 when pkg-config cannot find its SDK.
+r_util_dep = dependency('r_util', required: false)
+if not r_util_dep.found()
+  r_util_dep = r2_fallback_dep
+endif
+
+r_bin_dep = dependency('r_bin', required: false)
+if not r_bin_dep.found()
+  r_bin_dep = r2_fallback_dep
+endif
 
 conf = configuration_data()
 conf.set_quoted('R2UNITY_VERSION', meson.project_version())
@@ -48,7 +66,10 @@ test('r2unity-help', r2unity, args: ['-h'])
 test('r2unity-version', r2unity, args: ['-v'])
 
 plugins_opt = get_option('plugins')
-r_core_dep = dependency('r_core', required: plugins_opt)
+r_core_dep = dependency('r_core', required: false)
+if not r_core_dep.found() and not plugins_opt.disabled()
+  r_core_dep = r2_fallback_dep
+endif
 build_plugins = plugins_opt.enabled() or (
   plugins_opt.auto() and r_core_dep.found() and r_bin_dep.found()
 )

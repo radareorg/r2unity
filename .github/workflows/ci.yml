@@ -110,6 +110,69 @@ jobs:
           if-no-files-found: error
           archive: false
 
+  windows:
+    name: Build Windows package
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: 3.12.x
+
+      - name: Setup MSVC
+        uses: TheMrMilchmann/setup-msvc-dev@v4
+        with:
+          arch: x64
+
+      - name: Install build dependencies
+        run: python -m pip install meson ninja
+
+      - name: Install radare2
+        id: r2
+        uses: radareorg/github-actions@v3
+
+      - name: Configure
+        run: meson setup build-windows --buildtype=release -Dplugins=enabled
+
+      - name: Build
+        run: meson compile -C build-windows
+
+      - name: Test
+        run: meson test -C build-windows --print-errorlogs
+
+      - name: Package Windows build
+        id: package
+        shell: pwsh
+        run: |
+          $project = meson introspect build-windows --projectinfo | ConvertFrom-Json
+          $package = "r2unity-$($project.version)-w64"
+          $files = @(
+            "build-windows\r2unity.exe",
+            "build-windows\core_r2unity.dll",
+            "build-windows\bin_r2unity.dll"
+          )
+          New-Item -ItemType Directory -Path $package | Out-Null
+          foreach ($file in $files) {
+            if (-not (Test-Path $file)) {
+              throw "Missing Windows build output: $file"
+            }
+            Copy-Item $file -Destination $package
+          }
+          $archive = "$package.zip"
+          Compress-Archive -Path "$package\*" -DestinationPath $archive -Force
+          "archive=$archive" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload Windows package artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-package
+          path: ${{ steps.package.outputs.archive }}
+          if-no-files-found: error
+
   release:
     name: Publish release
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/') }}
@@ -117,6 +180,7 @@ jobs:
       - build
       - meson
       - debian
+      - windows
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -126,12 +190,18 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download artifacts
+      - name: Download Debian package artifact
         uses: actions/download-artifact@v8
         with:
           pattern: '*.deb'
           path: dist/artifacts
           merge-multiple: true
+
+      - name: Download Windows package artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: windows-package
+          path: dist/artifacts
 
       - name: Generate release notes
         run: ./release.sh notes > release-notes.md
@@ -147,3 +217,4 @@ jobs:
           fail_on_unmatched_files: true
           files: |
             dist/artifacts/*.deb
+            dist/artifacts/*.zip
