@@ -70,7 +70,7 @@ $(EXEC): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
 $(CONFIG_H): meson.build
-	echo '#define R2UNITY_VERSION "$(PROJECT_VERSION)"\n' > $@
+	echo '#define R2UNITY_VERSION "$(PROJECT_VERSION)"' > $@
 
 $(CLI_OBJS): %.o: %.c $(CONFIG_H)
 	$(CC) $(CFLAGS) -c -o $@ $<
