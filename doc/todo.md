@@ -119,7 +119,7 @@ Still missing:
 
     Add or improve decoding for:
 
-    - parameters and full method signatures
+    - generic method/type substitutions in signatures
     - default values for fields and parameters
     - properties and events
     - nested types

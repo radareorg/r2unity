@@ -132,6 +132,12 @@ typedef struct {
 
 typedef struct {
 	uint32_t nameIndex;
+	uint32_t token;
+	int32_t typeIndex;
+} Il2CppParameterDefinition;
+
+typedef struct {
+	uint32_t nameIndex;
 	int32_t assemblyIndex;
 	int32_t typeStart;
 	uint32_t typeCount;
@@ -264,6 +270,9 @@ R_API bool r2unity_read_string_literal(R2UnityMetadata *meta, const Il2CppString
 R_API Il2CppTypeDefinition *r2unity_get_type_definitions(R2UnityMetadata *meta, size_t *count);
 R_API Il2CppMethodDefinition *r2unity_get_method_definitions(R2UnityMetadata *meta, size_t *count);
 R_API Il2CppFieldDefinition *r2unity_get_field_definitions(R2UnityMetadata *meta, size_t *count);
+R_API Il2CppParameterDefinition *r2unity_get_parameter_definitions(R2UnityMetadata *meta, size_t *count);
+R_API char *r2unity_type_name_from_index(R2UnityMetadata *meta, const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index, bool fallback);
+R_API char *r2unity_method_signature(R2UnityMetadata *meta, const Il2CppMethodDefinition *method, const Il2CppTypeDefinition *owner, size_t owner_index, const Il2CppTypeDefinition *types, size_t type_count, const Il2CppParameterDefinition *parameters, size_t parameter_count, bool fallback);
 R_API int32_t *r2unity_get_type_index_table(R2UnityMetadata *meta, R2UMetadataSectionId id, size_t *count);
 R_API Il2CppImageDefinition *r2unity_get_images(R2UnityMetadata *meta, size_t *count);
 R_API int *r2unity_build_type_image_map(const Il2CppImageDefinition *images, size_t image_count, size_t type_count);

@@ -355,10 +355,14 @@ int32_t  customAttributeIndex;     /* removed at v24.1 */
 int32_t  typeIndex;                /* -> MetadataRegistration.types */
 ```
 
-Not decoded by r2unity today. Without it, every dumped method
-degrades to `Method()` with no parameter types or names. Combined
-with `parameterDefaultValues` (§2.4) this is what reconstructs real
-C# signatures like `Foo(string name, int count = 0)`.
+r2unity decodes this table and exposes parameter tokens, names, and
+type indices in `r2unity-sj`; it also emits a canonical signature such
+as `Namespace.Type.Foo(this;string:name,int:count):void`. Type indices
+that refer directly to a type definition are resolved to source names.
+Pointer, array, and constructed-generic indices still require the native
+`MetadataRegistration.types` table and use `type_index.N` until that
+table is available. `parameterDefaultValues` (§2.4) remains necessary
+to reconstruct optional values such as `int count = 0`.
 
 ### 2.4 Default values: `fieldDefaultValues`, `parameterDefaultValues`,
 `fieldAndParameterDefaultValueData`

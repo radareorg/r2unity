@@ -295,6 +295,12 @@ static ut64 field_definition_entry_size(R2UnityMetadata *meta) {
 	return 4 + type_index_size + 4;
 }
 
+static ut64 parameter_definition_entry_size(R2UnityMetadata *meta) {
+	const bool compact_indices = (meta->version >= 35);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	return 4 + 4 + type_index_size;
+}
+
 /* Detect v24.0 vs v24.1+ (both land on disk as version==24).
  *
  * At v24.1 the ImageDefinition row grew by 8 bytes (added
@@ -507,6 +513,8 @@ R_API ut64 r2unity_metadata_section_entry_size(R2UnityMetadata *meta, R2UMetadat
 		return method_definition_entry_size (meta);
 	case R2U_SEC_FIELDS:
 		return field_definition_entry_size (meta);
+	case R2U_SEC_PARAMETERS:
+		return parameter_definition_entry_size (meta);
 	case R2U_SEC_TYPE_DEFINITIONS:
 		return type_definition_entry_size (meta);
 	case R2U_SEC_IMAGES:
@@ -818,6 +826,123 @@ R_API Il2CppFieldDefinition *r2unity_get_field_definitions(R2UnityMetadata *meta
 	}
 	R_FREE (buf);
 	return fields;
+}
+
+R_API Il2CppParameterDefinition *r2unity_get_parameter_definitions(R2UnityMetadata *meta, size_t *count) {
+	R_RETURN_VAL_IF_FAIL (meta && count, NULL);
+	const bool compact_indices = (meta->version >= 35);
+	const int type_index_size = compact_indices? meta->typeIndexSize: 4;
+	const ut64 entry = parameter_definition_entry_size (meta);
+	ut8 *buf = read_metadata_table (meta, R2U_SEC_PARAMETERS, entry, count);
+	if (!buf) {
+		return NULL;
+	}
+	Il2CppParameterDefinition *parameters = R_NEWS (Il2CppParameterDefinition, *count);
+	if (!parameters) {
+		R_FREE (buf);
+		return NULL;
+	}
+	for (size_t i = 0; i < *count; i++) {
+		const ut8 *p = buf + i * entry;
+		parameters[i].nameIndex = read_u32p (&p);
+		parameters[i].token = read_u32p (&p);
+		parameters[i].typeIndex = read_indexp (&p, type_index_size);
+	}
+	R_FREE (buf);
+	return parameters;
+}
+
+static const char *csharp_type_alias(const char *name) {
+	static const struct {
+		const char *fullname;
+		const char *alias;
+	} aliases[] = {
+		{ "System.Void", "void" },
+		{ "System.Boolean", "bool" },
+		{ "System.Byte", "byte" },
+		{ "System.SByte", "sbyte" },
+		{ "System.Char", "char" },
+		{ "System.Decimal", "decimal" },
+		{ "System.Double", "double" },
+		{ "System.Single", "float" },
+		{ "System.Int16", "short" },
+		{ "System.UInt16", "ushort" },
+		{ "System.Int32", "int" },
+		{ "System.UInt32", "uint" },
+		{ "System.Int64", "long" },
+		{ "System.UInt64", "ulong" },
+		{ "System.IntPtr", "nint" },
+		{ "System.UIntPtr", "nuint" },
+		{ "System.Object", "object" },
+		{ "System.String", "string" },
+	};
+	for (size_t i = 0; i < R_ARRAY_SIZE (aliases); i++) {
+		if (!strcmp (name, aliases[i].fullname)) {
+			return aliases[i].alias;
+		}
+	}
+	return NULL;
+}
+
+R_API char *r2unity_type_name_from_index(R2UnityMetadata *meta, const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index, bool fallback) {
+	R_RETURN_VAL_IF_FAIL (meta, NULL);
+	if (type_index >= 0) {
+		for (size_t i = 0; types && i < type_count; i++) {
+			if (types[i].byvalTypeIndex != type_index) {
+				continue;
+			}
+			char *name = r2unity_type_fullname (meta, &types[i], i, R2U_NAME_FALLBACK_TYPE);
+			if (name) {
+				const char *alias = csharp_type_alias (name);
+				if (alias) {
+					free (name);
+					return strdup (alias);
+				}
+			}
+			return name;
+		}
+	}
+	return fallback? r_str_newf ("type_index.%d", type_index): NULL;
+}
+
+R_API char *r2unity_method_signature(R2UnityMetadata *meta, const Il2CppMethodDefinition *method, const Il2CppTypeDefinition *owner, size_t owner_index, const Il2CppTypeDefinition *types, size_t type_count, const Il2CppParameterDefinition *parameters, size_t parameter_count, bool fallback) {
+	R_RETURN_VAL_IF_FAIL (meta && method, NULL);
+	char *return_type = r2unity_type_name_from_index (meta, types, type_count, method->returnType, fallback);
+	char *method_name = r2unity_method_fullname (meta, method, owner, owner_index,
+		fallback? R2U_NAME_FALLBACK_TYPE: 0);
+	if (!method_name) {
+		free (return_type);
+		return NULL;
+	}
+	RStrBuf *sb = r_strbuf_new (method_name);
+	r_strbuf_append (sb, "(");
+	bool is_instance = !(method->flags & 0x0010);
+	if (is_instance) {
+		r_strbuf_append (sb, "this;");
+	}
+	for (size_t i = 0; i < method->parameterCount; i++) {
+		st64 pi = (st64)method->parameterStart + (st64)i;
+		const Il2CppParameterDefinition *parameter = parameters
+			&& pi >= 0 && (ut64)pi < parameter_count
+			? &parameters[pi]: NULL;
+		char *type_name = parameter
+			? r2unity_type_name_from_index (meta, types, type_count, parameter->typeIndex, fallback)
+			: NULL;
+		char *parameter_name = parameter? r2unity_get_string (meta, parameter->nameIndex): NULL;
+		r_strbuf_appendf (sb, "%s%s", i? ",": "",
+			type_name? type_name: "unknown");
+		if (R_STR_ISNOTEMPTY (parameter_name)) {
+			r_strbuf_appendf (sb, ":%s", parameter_name);
+		} else {
+			r_strbuf_appendf (sb, ":arg%zu", i);
+		}
+		free (parameter_name);
+		free (type_name);
+	}
+	r_strbuf_appendf (sb, "):%s", return_type? return_type: "unknown");
+	free (method_name);
+	free (return_type);
+	return r_strbuf_drain (sb);
 }
 
 R_API int32_t *r2unity_get_type_index_table(R2UnityMetadata *meta, R2UMetadataSectionId id, size_t *count) {

@@ -835,15 +835,30 @@ static RBinSymbol *new_symbol(const char *name, ut64 paddr, ut64 size, const cha
 	if (!sym) {
 		return NULL;
 	}
+#if R2_ABIVERSION >= 138
+	sym->attr.size = (ut32)R_MIN (size, UT32_MAX);
+	sym->attr.flags = attr;
+	sym->attr.lang = R_BIN_LANG_NONE;
+#else
 	sym->size = (ut32)R_MIN (size, UT32_MAX);
-	sym->type = type;
 	sym->attr = attr;
-	sym->ordinal = ordinal;
 	sym->lang = R_BIN_LANG_NONE;
+#endif
+	sym->type = type;
+	sym->ordinal = ordinal;
 	if (classname) {
 		sym->classname = strdup (classname);
 	}
 	return sym;
+}
+
+static void set_symbol_signature(RBinSymbol *sym, const char *name, const char *signature) {
+	if (!sym || !sym->name || !name || !signature) {
+		return;
+	}
+	free (sym->name->name);
+	sym->name->name = strdup (name);
+	r_bin_name_update (sym->name, signature);
 }
 
 #if R2UNITY_BIN_VEC_ABI
@@ -1016,6 +1031,8 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 
 	size_t method_count = 0;
 	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	size_t parameter_count = 0;
+	Il2CppParameterDefinition *parameters = r2unity_get_parameter_definitions (meta, &parameter_count);
 	ut64 method_entry = r2unity_metadata_section_entry_size (meta, R2U_SEC_METHODS);
 	Il2CppMetadataSection method_sec;
 	r2unity_metadata_section (meta, R2U_SEC_METHODS, &method_sec);
@@ -1036,12 +1053,29 @@ static bool symbols_fill(RBinFile *bf, R2UnitySymbolSink *ret) {
 			classname = r2unity_type_fullname (meta, td, type_idx, R2U_NAME_FALLBACK_TYPE);
 		}
 		RBinSymbol *sym = new_symbol (name, method_sec.offset + i * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[i].flags, mn), classname, ordinal++);
+		if (sym) {
+			char *signature = r2unity_method_signature (meta, &methods[i], td, type_idx,
+				types, type_count, parameters, parameter_count, true);
+			set_symbol_signature (sym, name, signature);
+			free (signature);
+			sym->rtype = r2unity_type_name_from_index (meta, types, type_count,
+				methods[i].returnType, true);
+#if R2_ABIVERSION >= 138
+			sym->attr.lang = R_BIN_LANG_CIL;
+			sym->arg_count = methods[i].parameterCount
+				+ ((methods[i].flags & 0x0010)? 0: 1);
+			sym->cc_arg_count = sym->arg_count;
+			sym->ret_count = sym->rtype && !strcmp (sym->rtype, "void")? 0: 1;
+			sym->arg_prefix = "a";
+#endif
+		}
 		append_symbol (ret, sym);
 		free (classname);
 		free (mn);
 		free (name);
 	}
 
+	R_FREE (parameters);
 	R_FREE (methods);
 	R_FREE (types);
 	R_FREE (asms);
@@ -1087,7 +1121,11 @@ static RList *classes(RBinFile *bf) {
 			if (klass) {
 				klass->index = (int)i;
 				klass->addr = type->offset;
+#if R2_ABIVERSION >= 138
+				klass->attr.lang = R_BIN_LANG_NONE;
+#else
 				klass->lang = R_BIN_LANG_NONE;
+#endif
 				r_list_append (ret, klass);
 			}
 			free (name);
@@ -1100,7 +1138,11 @@ static RList *classes(RBinFile *bf) {
 			RBinClass *klass = r_bin_class_new (name, NULL, R_BIN_ATTR_NONE);
 			klass->index = (int)i;
 			klass->addr = obj->bgdb->tables[i].offset;
+#if R2_ABIVERSION >= 138
+			klass->attr.lang = R_BIN_LANG_NONE;
+#else
 			klass->lang = R_BIN_LANG_NONE;
+#endif
 			r_list_append (ret, klass);
 			free (name);
 		}
@@ -1115,6 +1157,10 @@ static RList *classes(RBinFile *bf) {
 	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
 	size_t method_count = 0;
 	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	size_t parameter_count = 0;
+	Il2CppParameterDefinition *parameters = r2unity_get_parameter_definitions (meta, &parameter_count);
+	size_t field_count = 0;
+	Il2CppFieldDefinition *fields = r2unity_get_field_definitions (meta, &field_count);
 	Il2CppMetadataSection type_sec;
 	Il2CppMetadataSection method_sec;
 	r2unity_metadata_section (meta, R2U_SEC_TYPE_DEFINITIONS, &type_sec);
@@ -1125,16 +1171,48 @@ static RList *classes(RBinFile *bf) {
 	for (size_t i = 0; types && i < type_count; i++) {
 		char *ns = get_string (obj, types[i].namespaceIndex);
 		char *tn = get_string (obj, types[i].nameIndex);
+		char *base = r2unity_type_name_from_index (meta, types, type_count,
+			types[i].parentIndex, false);
 		char *fallback = NULL;
 		if (!tn || !*tn) {
 			fallback = r_str_newf ("type.%zu", i);
 		}
-		RBinClass *klass = r_bin_class_new ((tn && *tn)? tn: fallback, NULL, type_attr (types[i].flags));
+		RBinClass *klass = r_bin_class_new ((tn && *tn)? tn: fallback, base, type_attr (types[i].flags));
 		klass->index = (int)i;
 		klass->addr = type_sec.offset + i * type_entry;
-		klass->lang = R_BIN_LANG_NONE;
+#if R2_ABIVERSION >= 138
+		klass->attr.lang = R_BIN_LANG_CIL;
+#else
+		klass->lang = R_BIN_LANG_CIL;
+#endif
 		if (ns && *ns) {
+#if R2_ABIVERSION >= 138
+			klass->attr.ns = strdup (ns);
+#else
 			klass->ns = strdup (ns);
+#endif
+		}
+		int field_start = types[i].fieldStart;
+		int fields_in_type = types[i].field_count;
+		for (int k = 0; fields && k < fields_in_type && field_start >= 0
+				&& (size_t)(field_start + k) < field_count; k++) {
+			size_t fi = (size_t)(field_start + k);
+			char *field_name = get_string (obj, fields[fi].nameIndex);
+			char *field_type = r2unity_type_name_from_index (meta, types, type_count,
+				fields[fi].typeIndex, true);
+#if R2UNITY_BIN_VEC_ABI
+			RBinField *field = RVecRBinField_emplace_back (&klass->fields);
+			if (field) {
+				field->name = r_bin_name_new (R_STR_ISNOTEMPTY (field_name)? field_name: "field");
+				field->type = r_bin_name_new (R_STR_ISNOTEMPTY (field_type)? field_type: "unknown");
+#if R2_ABIVERSION >= 138
+				field->attr.kind = R_BIN_FIELD_KIND_FIELD;
+				field->attr.lang = R_BIN_LANG_CIL;
+#endif
+			}
+#endif
+			free (field_type);
+			free (field_name);
 		}
 		int start = types[i].methodStart;
 		int count = types[i].method_count;
@@ -1149,16 +1227,35 @@ static RList *classes(RBinFile *bf) {
 			char *mname = r2unity_method_fullname (meta, &methods[mi], td, type_idx, R2U_NAME_WITH_PARAMS | R2U_NAME_FALLBACK_TYPE);
 			char *raw = get_string (obj, methods[mi].nameIndex);
 			RBinSymbol *sym = new_symbol (mname? mname: raw, method_sec.offset + mi * method_entry, method_entry, R_BIN_TYPE_METH_STR, method_attr (methods[mi].flags, raw), NULL, (int)mi);
+			if (sym) {
+				char *signature = r2unity_method_signature (meta, &methods[mi], td, type_idx,
+					types, type_count, parameters, parameter_count, true);
+				set_symbol_signature (sym, mname? mname: raw, signature);
+				free (signature);
+				sym->rtype = r2unity_type_name_from_index (meta, types, type_count,
+					methods[mi].returnType, true);
+#if R2_ABIVERSION >= 138
+				sym->attr.lang = R_BIN_LANG_CIL;
+				sym->arg_count = methods[mi].parameterCount
+					+ ((methods[mi].flags & 0x0010)? 0: 1);
+				sym->cc_arg_count = sym->arg_count;
+				sym->ret_count = sym->rtype && !strcmp (sym->rtype, "void")? 0: 1;
+				sym->arg_prefix = "a";
+#endif
+			}
 			append_class_method (klass, sym);
 			free (raw);
 			free (mname);
 		}
 		r_list_append (ret, klass);
+		free (base);
 		free (fallback);
 		free (tn);
 		free (ns);
 	}
 
+	R_FREE (fields);
+	R_FREE (parameters);
 	R_FREE (methods);
 	R_FREE (types);
 	return ret;

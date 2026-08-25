@@ -441,26 +441,8 @@ static bool enrich_reverse_pinvokes_native(RCore *core, R2UnityMetadata *meta, c
 	return path && *path && r2unity_enrich_reverse_pinvokes_native (meta, path, &opts, items, count);
 }
 
-static int type_definition_for_type_index(const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index) {
-	if (type_index >= 0) {
-		for (size_t i = 0; i < type_count; i++) {
-			if (types[i].byvalTypeIndex == type_index) {
-				return (int)i;
-			}
-		}
-	}
-	return -1;
-}
-
 static char *type_name_from_index(R2UnityMetadata *meta, const Il2CppTypeDefinition *types, size_t type_count, int32_t type_index, bool fallback) {
-	int idx = type_definition_for_type_index (types, type_count, type_index);
-	if (idx >= 0) {
-		return r2unity_type_fullname (meta, &types[idx], (size_t)idx, R2U_NAME_FALLBACK_TYPE);
-	}
-	if (fallback && type_index >= 0) {
-		return r_str_newf ("type_index.%d", type_index);
-	}
-	return NULL;
+	return r2unity_type_name_from_index (meta, types, type_count, type_index, fallback);
 }
 
 static char *field_name_or_fallback(R2UnityMetadata *meta, const Il2CppFieldDefinition *field, size_t index) {
@@ -832,6 +814,8 @@ static int cmd_symbols(RCore *core, char mode) {
 	Il2CppTypeDefinition *types = r2unity_get_type_definitions (meta, &type_count);
 	size_t method_count = 0;
 	Il2CppMethodDefinition *methods = r2unity_get_method_definitions (meta, &method_count);
+	size_t parameter_count = 0;
+	Il2CppParameterDefinition *parameters = r2unity_get_parameter_definitions (meta, &parameter_count);
 	size_t img_count = 0;
 	Il2CppImageDefinition *images = r2unity_get_images (meta, &img_count);
 
@@ -876,12 +860,16 @@ static int cmd_symbols(RCore *core, char mode) {
 		if (!fullname) {
 			continue;
 		}
+		char *signature = r2unity_method_signature (meta, m, td, type_idx,
+			types, type_count, parameters, parameter_count, true);
+		char *return_type = r2unity_type_name_from_index (meta, types, type_count,
+			m->returnType, true);
 		char *imgname = img? r2unity_get_string (meta, img->nameIndex): NULL;
 		char flag_buf[1024];
 		if (imgname && *imgname) {
-			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s.%s", imgname, fullname);
+			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s.%s.%zu", imgname, fullname, j);
 		} else {
-			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s", fullname);
+			snprintf (flag_buf, sizeof (flag_buf), "sym.unity.%s.%zu", fullname, j);
 		}
 		r_name_filter (flag_buf, -1);
 
@@ -890,6 +878,33 @@ static int cmd_symbols(RCore *core, char mode) {
 		if (mode == 'j') {
 			pj_o (pj);
 			pj_ks (pj, "name", fullname);
+			pj_kn (pj, "index", (ut64)j);
+			pj_hex (pj, "token", m->token, 8);
+			pj_string_or_null (pj, "signature", signature);
+			pj_string_or_null (pj, "return_type", return_type);
+			pj_kb (pj, "static", (m->flags & 0x0010) != 0);
+			pj_ka (pj, "parameters");
+			for (size_t k = 0; k < m->parameterCount; k++) {
+				st64 pi = (st64)m->parameterStart + (st64)k;
+				const Il2CppParameterDefinition *parameter = pi >= 0 && (ut64)pi < parameter_count
+					? &parameters[pi]: NULL;
+				char *parameter_name = parameter? r2unity_get_string (meta, parameter->nameIndex): NULL;
+				char *parameter_type = parameter
+					? r2unity_type_name_from_index (meta, types, type_count, parameter->typeIndex, true)
+					: NULL;
+				pj_o (pj);
+				pj_kn (pj, "index", k);
+				if (parameter) {
+					pj_ki (pj, "type_index", parameter->typeIndex);
+					pj_hex (pj, "token", parameter->token, 8);
+				}
+				pj_string_or_null (pj, "name", parameter_name);
+				pj_string_or_null (pj, "type", parameter_type);
+				pj_end (pj);
+				free (parameter_type);
+				free (parameter_name);
+			}
+			pj_end (pj);
 			pj_ks (pj, "flag", flag_buf);
 			if (imgname) {
 				pj_ks (pj, "image", imgname);
@@ -903,11 +918,11 @@ static int cmd_symbols(RCore *core, char mode) {
 			if (addr > 0x1000) {
 				r_cons_printf (core->cons, "'@0x%" PFMT64x "'f %s\n", addr, flag_buf);
 				if (imgname && *imgname) {
-					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n", addr, imgname, *attrs? " ": "", attrs, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: [%s]%s%s %s\n", addr, imgname, *attrs? " ": "", attrs, signature? signature: fullname);
 				} else if (*attrs) {
-					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s %s\n", addr, attrs, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s %s\n", addr, attrs, signature? signature: fullname);
 				} else {
-					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s\n", addr, fullname);
+					r_cons_printf (core->cons, "'@0x%" PFMT64x "'CCu Method: %s\n", addr, signature? signature: fullname);
 				}
 				listed++;
 			}
@@ -921,11 +936,11 @@ static int cmd_symbols(RCore *core, char mode) {
 						imgname,
 						*attrs? " ": "",
 						attrs,
-						fullname);
+						signature? signature: fullname);
 				} else if (*attrs) {
-					comment = r_str_newf ("Method: %s %s", attrs, fullname);
+					comment = r_str_newf ("Method: %s %s", attrs, signature? signature: fullname);
 				} else {
-					comment = r_str_newf ("Method: %s", fullname);
+					comment = r_str_newf ("Method: %s", signature? signature: fullname);
 				}
 				if (comment) {
 					r_meta_set_string (core->anal, R_META_TYPE_COMMENT, addr, comment);
@@ -937,6 +952,8 @@ static int cmd_symbols(RCore *core, char mode) {
 
 		free (attrs);
 		free (imgname);
+		free (return_type);
+		free (signature);
 		free (fullname);
 	}
 
@@ -956,6 +973,7 @@ static int cmd_symbols(RCore *core, char mode) {
 	r2unity_native_result_fini (&native_result);
 	R_FREE (type2img);
 	R_FREE (images);
+	R_FREE (parameters);
 	R_FREE (methods);
 	R_FREE (types);
 	close_metadata (meta, buf);
