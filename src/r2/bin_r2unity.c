@@ -189,15 +189,10 @@ static void fill_metadata_sdb(R2UnityBinObj *obj) {
 		if (!name) {
 			continue;
 		}
-		char key[192];
-		snprintf (key, sizeof (key), "sections.%s.offset", name);
-		sdb_num_set (kv, key, sec.offset, 0);
-		snprintf (key, sizeof (key), "sections.%s.size", name);
-		sdb_num_set (kv, key, sec.size, 0);
-		snprintf (key, sizeof (key), "sections.%s.count", name);
-		sdb_num_set (kv, key, r2unity_metadata_section_count (meta, (R2UMetadataSectionId)i), 0);
-		snprintf (key, sizeof (key), "sections.%s.entry_size", name);
-		sdb_num_set (kv, key, r2unity_metadata_section_entry_size (meta, (R2UMetadataSectionId)i), 0);
+		sdb_num_setf (kv, sec.offset, 0, "sections.%s.offset", name);
+		sdb_num_setf (kv, sec.size, 0, "sections.%s.size", name);
+		sdb_num_setf (kv, r2unity_metadata_section_count (meta, (R2UMetadataSectionId)i), 0, "sections.%s.count", name);
+		sdb_num_setf (kv, r2unity_metadata_section_entry_size (meta, (R2UMetadataSectionId)i), 0, "sections.%s.entry_size", name);
 	}
 	sdb_num_set (kv, "counts.types", r2unity_metadata_section_count (meta, R2U_SEC_TYPE_DEFINITIONS), 0);
 	sdb_num_set (kv, "counts.methods", r2unity_metadata_section_count (meta, R2U_SEC_METHODS), 0);
@@ -225,40 +220,26 @@ static void fill_serialized_file_sdb(R2UnityBinObj *obj) {
 	sdb_num_set (kv, "counts.scripts", sf->script_count, 0);
 	sdb_num_set (kv, "counts.externals", sf->external_count, 0);
 	for (size_t i = 0; i < sf->external_count; i++) {
-		char key[128];
-		snprintf (key, sizeof (key), "externals.%zu.path", i);
-		sdb_set (kv, key, sf->externals[i].path, 0);
+		sdb_setf (kv, sf->externals[i].path, 0, "externals.%zu.path", i);
 	}
 	for (size_t i = 0; i < sf->object_count; i++) {
 		R2UnitySerializedObject *asset = &sf->objects[i];
-		char key[128];
-		snprintf (key, sizeof (key), "objects.%zu.path_id", i);
-		sdb_num_set (kv, key, (ut64)asset->path_id, 0);
-		snprintf (key, sizeof (key), "objects.%zu.class_id", i);
-		sdb_num_set (kv, key, (ut64)(st64)asset->class_id, 0);
-		snprintf (key, sizeof (key), "objects.%zu.class", i);
-		sdb_set (kv, key, r2unity_serialized_class_name (asset->class_id), 0);
-		snprintf (key, sizeof (key), "objects.%zu.offset", i);
-		sdb_num_set (kv, key, asset->offset, 0);
-		snprintf (key, sizeof (key), "objects.%zu.size", i);
-		sdb_num_set (kv, key, asset->size, 0);
+		sdb_num_setf (kv, (ut64)asset->path_id, 0, "objects.%zu.path_id", i);
+		sdb_num_setf (kv, (ut64)(st64)asset->class_id, 0, "objects.%zu.class_id", i);
+		sdb_setf (kv, r2unity_serialized_class_name (asset->class_id), 0, "objects.%zu.class", i);
+		sdb_num_setf (kv, asset->offset, 0, "objects.%zu.offset", i);
+		sdb_num_setf (kv, asset->size, 0, "objects.%zu.size", i);
 		if (asset->name) {
-			snprintf (key, sizeof (key), "objects.%zu.name", i);
-			sdb_set (kv, key, asset->name, 0);
+			sdb_setf (kv, asset->name, 0, "objects.%zu.name", i);
 		}
 		if (asset->payload_size) {
-			snprintf (key, sizeof (key), "objects.%zu.payload.offset", i);
-			sdb_num_set (kv, key, asset->payload_offset, 0);
-			snprintf (key, sizeof (key), "objects.%zu.payload.size", i);
-			sdb_num_set (kv, key, asset->payload_size, 0);
+			sdb_num_setf (kv, asset->payload_offset, 0, "objects.%zu.payload.offset", i);
+			sdb_num_setf (kv, asset->payload_size, 0, "objects.%zu.payload.size", i);
 		}
 		if (asset->stream_path) {
-			snprintf (key, sizeof (key), "objects.%zu.stream.path", i);
-			sdb_set (kv, key, asset->stream_path, 0);
-			snprintf (key, sizeof (key), "objects.%zu.stream.offset", i);
-			sdb_num_set (kv, key, asset->stream_offset, 0);
-			snprintf (key, sizeof (key), "objects.%zu.stream.size", i);
-			sdb_num_set (kv, key, asset->stream_size, 0);
+			sdb_setf (kv, asset->stream_path, 0, "objects.%zu.stream.path", i);
+			sdb_num_setf (kv, asset->stream_offset, 0, "objects.%zu.stream.offset", i);
+			sdb_num_setf (kv, asset->stream_size, 0, "objects.%zu.stream.size", i);
 		}
 	}
 }
@@ -278,23 +259,15 @@ static void fill_bgdatabase_sdb(R2UnityBinObj *obj) {
 	sdb_num_set (kv, "counts.strings", db->string_count, 0);
 	for (size_t i = 0; i < db->addon_count; i++) {
 		R2UnityBGDatabaseAddon *addon = &db->addons[i];
-		char key[128];
-		snprintf (key, sizeof (key), "addons.%zu.type", i);
-		sdb_set (kv, key, addon->type, 0);
-		snprintf (key, sizeof (key), "addons.%zu.payload.offset", i);
-		sdb_num_set (kv, key, addon->payload_offset, 0);
-		snprintf (key, sizeof (key), "addons.%zu.payload.size", i);
-		sdb_num_set (kv, key, addon->payload_size, 0);
+		sdb_setf (kv, addon->type, 0, "addons.%zu.type", i);
+		sdb_num_setf (kv, addon->payload_offset, 0, "addons.%zu.payload.offset", i);
+		sdb_num_setf (kv, addon->payload_size, 0, "addons.%zu.payload.size", i);
 	}
 	for (size_t i = 0; i < db->table_count; i++) {
 		R2UnityBGDatabaseTable *table = &db->tables[i];
-		char key[128];
-		snprintf (key, sizeof (key), "tables.%zu.offset", i);
-		sdb_num_set (kv, key, table->offset, 0);
-		snprintf (key, sizeof (key), "tables.%zu.size", i);
-		sdb_num_set (kv, key, table->size, 0);
-		snprintf (key, sizeof (key), "tables.%zu.fields", i);
-		sdb_num_set (kv, key, table->field_count, 0);
+		sdb_num_setf (kv, table->offset, 0, "tables.%zu.offset", i);
+		sdb_num_setf (kv, table->size, 0, "tables.%zu.size", i);
+		sdb_num_setf (kv, table->field_count, 0, "tables.%zu.fields", i);
 	}
 }
 
@@ -308,13 +281,9 @@ static void fill_resource_pack_sdb(R2UnityBinObj *obj) {
 	sdb_num_set (kv, "counts.resources", pack->entry_count, 0);
 	for (size_t i = 0; i < pack->entry_count; i++) {
 		R2UnityResourcePackEntry *entry = &pack->entries[i];
-		char key[128];
-		snprintf (key, sizeof (key), "resources.%zu.name", i);
-		sdb_set (kv, key, entry->name, 0);
-		snprintf (key, sizeof (key), "resources.%zu.offset", i);
-		sdb_num_set (kv, key, entry->payload_offset, 0);
-		snprintf (key, sizeof (key), "resources.%zu.payload_size", i);
-		sdb_num_set (kv, key, entry->payload_size, 0);
+		sdb_setf (kv, entry->name, 0, "resources.%zu.name", i);
+		sdb_num_setf (kv, entry->payload_offset, 0, "resources.%zu.offset", i);
+		sdb_num_setf (kv, entry->payload_size, 0, "resources.%zu.payload_size", i);
 	}
 }
 
