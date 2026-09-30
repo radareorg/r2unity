@@ -22,3 +22,6 @@
 
 # Third-party reference checkouts (radare2, il2cpp dumper, etc.)
 /third_party/
+
+# r2pm binary packages
+/r2unity-*.zip

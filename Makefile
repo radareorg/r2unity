@@ -66,6 +66,14 @@ user-install: install-plugin
 user-uninstall: uninstall-plugin
 	rm -f "$(R2PM_BINDIR)/$(EXEC)"
 
+# Binary package for r2pm -bi: plugins/ and bin/ for this r2 version and platform
+BINDIST_ZIP = r2unity-$(shell r2 -qv)-$(shell r2pm -H R2PM_OS)-$(shell r2pm -H R2PM_ARCH)-$(shell r2pm -H R2PM_BITS).zip
+
+bindist: $(EXEC) $(PLUGINS)
+	rm -rf build/bindist $(BINDIST_ZIP)
+	$(MAKE) user-install R2_USER_PLUGINS=$(CURDIR)/build/bindist/plugins R2PM_BINDIR=$(CURDIR)/build/bindist/bin
+	cd build/bindist && zip -r $(CURDIR)/$(BINDIST_ZIP) plugins bin
+
 $(EXEC): $(OBJS)
 	$(CC) -o $@ $^ $(LDFLAGS)
 
@@ -88,4 +96,4 @@ clean:
 	rm -f $(EXEC) $(OBJS) $(LEGACY_OBJS) $(PLUGINS) $(CONFIG_H)
 
 
-.PHONY: all clean plugin install-plugin uninstall-plugin fmt
+.PHONY: all clean plugin install-plugin uninstall-plugin fmt bindist
