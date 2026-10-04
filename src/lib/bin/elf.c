@@ -30,6 +30,10 @@ static void elf_write_word(ut8 *p, ut64 v, bool is64) {
 	}
 }
 
+static bool elf_range_in_file(const ElfImg *e, ut64 off, ut64 size) {
+	return size <= e->size && off <= e->size - size;
+}
+
 static bool elf_load(const char *path, ElfImg *e) {
 	memset (e, 0, sizeof (*e));
 	size_t size = 0;
@@ -58,13 +62,16 @@ static bool elf_load(const char *path, ElfImg *e) {
 			if (type != 1 && type != 2) {
 				continue;
 			}
-			ElfSeg *s = &e->segs[e->nsegs++];
+			ElfSeg *s = &e->segs[e->nsegs];
 			s->type = type;
 			s->flags = r_read_le32 (ph + 4);
 			s->offset = r_read_le64 (ph + 8);
 			s->vaddr = r_read_le64 (ph + 16);
 			s->filesz = r_read_le64 (ph + 32);
 			s->memsz = r_read_le64 (ph + 40);
+			if (s->filesz && elf_range_in_file (e, s->offset, s->filesz)) {
+				e->nsegs++;
+			}
 		}
 	} else {
 		ut32 phoff = r_read_le32 (e->file + 0x1c);
@@ -80,13 +87,16 @@ static bool elf_load(const char *path, ElfImg *e) {
 			if (type != 1 && type != 2) {
 				continue;
 			}
-			ElfSeg *s = &e->segs[e->nsegs++];
+			ElfSeg *s = &e->segs[e->nsegs];
 			s->type = type;
 			s->offset = r_read_le32 (ph + 4);
 			s->vaddr = r_read_le32 (ph + 8);
 			s->filesz = r_read_le32 (ph + 16);
 			s->memsz = r_read_le32 (ph + 20);
 			s->flags = r_read_le32 (ph + 24);
+			if (s->filesz && elf_range_in_file (e, s->offset, s->filesz)) {
+				e->nsegs++;
+			}
 		}
 	}
 	return true;
@@ -104,7 +114,7 @@ static const ut8 *elf_ptr_at_size(ElfImg *e, ut64 va, ut64 size) {
 			continue;
 		}
 		ut64 delta = va - s->vaddr;
-		if (delta + size <= s->filesz && s->offset + delta + size <= e->size) {
+		if (size <= s->filesz && delta <= s->filesz - size && elf_range_in_file (e, s->offset + delta, size)) {
 			return e->file + s->offset + delta;
 		}
 		return NULL;
@@ -170,7 +180,7 @@ static void elf_apply_relocs(ElfImg *e, ut64 base) {
 			break;
 		}
 	}
-	if (!dyn_off || !dyn_sz || dyn_off + dyn_sz > e->size) {
+	if (!dyn_off || !dyn_sz || !elf_range_in_file (e, dyn_off, dyn_sz)) {
 		return;
 	}
 	ut64 rela_off = 0, rela_sz = 0, rela_ent = e->is64? 24: 12;
@@ -198,7 +208,7 @@ static void elf_apply_relocs(ElfImg *e, ut64 base) {
 		}
 	}
 	const ut64 type_mask = e->is64? 0xffffffffULL: 0xffULL;
-	for (ut64 i = 0; rela_off && rela_ent && i + rela_ent <= rela_sz; i += rela_ent) {
+	for (ut64 i = 0; rela_off && rela_ent == (e->is64? 24: 12) && i + rela_ent <= rela_sz; i += rela_ent) {
 		const ut8 *rp = elf_ptr_at_size (e, rela_off + i, rela_ent);
 		if (!rp) {
 			break;
@@ -214,7 +224,7 @@ static void elf_apply_relocs(ElfImg *e, ut64 base) {
 			}
 		}
 	}
-	for (ut64 i = 0; rel_off && rel_ent && i + rel_ent <= rel_sz; i += rel_ent) {
+	for (ut64 i = 0; rel_off && rel_ent == (e->is64? 16: 8) && i + rel_ent <= rel_sz; i += rel_ent) {
 		const ut8 *rp = elf_ptr_at_size (e, rel_off + i, rel_ent);
 		if (!rp) {
 			break;
@@ -230,7 +240,7 @@ static void elf_apply_relocs(ElfImg *e, ut64 base) {
 			}
 		}
 	}
-	if (!e->is64 || !relr_off || !relr_sz || !relr_ent) {
+	if (!e->is64 || !relr_off || !relr_sz || relr_ent != 8) {
 		return;
 	}
 	ut64 curr = 0;
