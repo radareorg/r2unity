@@ -123,11 +123,6 @@ jobs:
         with:
           python-version: 3.12.x
 
-      - name: Setup MSVC
-        uses: TheMrMilchmann/setup-msvc-dev@v4
-        with:
-          arch: x64
-
       - name: Install build dependencies
         run: python -m pip install meson ninja
 
@@ -136,7 +131,7 @@ jobs:
         uses: radareorg/github-actions@v3
 
       - name: Configure
-        run: meson setup build-windows --buildtype=release -Dplugins=enabled
+        run: meson setup build-windows --vsenv --buildtype=release -Dplugins=enabled
 
       - name: Build
         run: meson compile -C build-windows
