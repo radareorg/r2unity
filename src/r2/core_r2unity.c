@@ -1340,6 +1340,7 @@ RCorePlugin r_core_plugin_r2unity = {
 R_API RLibStruct radare_plugin = {
 	.type = R_LIB_TYPE_CORE,
 	.data = &r_core_plugin_r2unity,
-	.version = R2_VERSION
+	.version = R2_VERSION,
+	.pkgname = "r2unity"
 };
 #endif
