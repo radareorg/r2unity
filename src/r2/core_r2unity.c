@@ -14,14 +14,17 @@ static const char *g_help_msg[] = {
 	"r2unity", "", "show this help",
 	"r2unity?", "", "show this help",
 	"r2unity-A", "", "import classes and method flags (same as .r2unity-c*)",
+	"r2unity-AA", "", "also import method comments, strings, native tables and interop",
+	"r2unity-AAA", "", "also analyze native references (aar)",
+	"r2unity-AAAA", "", "also perform native analysis (aaa)",
 	"r2unity-c", "[*j]", "enumerate classes, inheritance, methods, and fields",
 	"r2unity-D", "", "auto-detect companion files from current binary path",
 	"r2unity-L", "", "open/select and map the IL2CPP native library",
 	"r2unity-i", "[j]", "summary (metadata version, type/method counts)",
 	"r2unity-s", "[*j]", "apply/list managed/native symbols as flags + comments",
-	"r2unity-z", "[j]", "list managed string literals",
-	"r2unity-P", "[*j]", "list P/Invoke (managed -> native)",
-	"r2unity-R", "[*j]", "list reverse-P/Invoke (native -> managed)",
+	"r2unity-z", "[+j]", "list managed string literals (+ imports flags and string metadata)",
+	"r2unity-P", "[+*j]", "list P/Invoke (managed -> native, + imports flags and comments)",
+	"r2unity-R", "[+*j]", "list reverse-P/Invoke (native -> managed, + imports wrappers)",
 	"r2unity-S", "[j]", "emit managed-assembly SBOM (text or JSON)", "Variables:", "", "",
 	"r2unity.metadata", "", "path to global-metadata.dat",
 	"r2unity.library", "", "path to IL2CPP native library",
@@ -1017,6 +1020,46 @@ static int cmd_symbols(RCore *core, char mode) {
 }
 
 /* ---------- r2unity-z (string literals) ---------- */
+static bool map_metadata(RCore *core, ut64 size, ut64 *base) {
+	const char *path = resolve_metadata_path (core);
+	RIODesc *desc = r_io_desc_get_byuri (core->io, path);
+	if (desc) {
+		RList *maps = r_io_map_get_by_fd (core->io, desc->fd);
+		RListIter *iter;
+		RIOMap *map;
+		r_list_foreach (maps, iter, map) {
+			if (!map->delta && r_itv_size (map->itv) >= size
+					&& r_io_map_get_at (core->io, r_io_map_begin (map)) == map) {
+				*base = r_io_map_begin (map);
+				r_list_free (maps);
+				return true;
+			}
+		}
+		r_list_free (maps);
+	}
+	*base = 0;
+	if (!r_io_map_locate (core->io, base, size, 0x1000)) {
+		R_LOG_ERROR ("cannot find space to map metadata");
+		return false;
+	}
+	int fd = r_io_fd_get_current (core->io);
+	bool opened = !desc;
+	if (opened) {
+		desc = r_io_open_nomap (core->io, path, R_PERM_R, 0);
+		r_io_use_fd (core->io, fd);
+	}
+	RIOMap *map = desc? r_io_map_add (core->io, desc->fd, R_PERM_R, 0, *base, size): NULL;
+	if (!map) {
+		if (opened && desc) {
+			r_io_desc_close (desc);
+		}
+		R_LOG_ERROR ("cannot map metadata: %s", path);
+		return false;
+	}
+	r_io_map_set_name (map, "r2unity.metadata");
+	return true;
+}
+
 static int cmd_strings(RCore *core, char mode) {
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
@@ -1026,9 +1069,20 @@ static int cmd_strings(RCore *core, char mode) {
 	size_t count = 0;
 	Il2CppStringLiteral *lits = r2unity_get_string_literals (meta, &count);
 	if (!lits) {
-		R_LOG_ERROR ("no string literals found");
+		if (mode != '+') {
+			R_LOG_ERROR ("no string literals found");
+		}
 		close_metadata (meta, buf);
-		return 1;
+		return mode == '+'? 0: 1;
+	}
+	ut64 base = 0;
+	if (mode == '+') {
+		if (!map_metadata (core, r_buf_size (buf), &base)) {
+			R_FREE (lits);
+			close_metadata (meta, buf);
+			return 1;
+		}
+		r_flag_set (core->flags, "r2unity.metadata", base, r_buf_size (buf));
 	}
 	PJ *pj = NULL;
 	if (mode == 'j') {
@@ -1037,21 +1091,34 @@ static int cmd_strings(RCore *core, char mode) {
 		pj_kb (pj, "ok", true);
 		pj_kn (pj, "count", (ut64)count);
 		pj_ka (pj, "strings");
-	} else {
+	} else if (mode != '+') {
 		r_cons_printf (core->cons, "# managed string literals (count=%zu)\n", count);
 		r_cons_printf (core->cons, "# idx\tdata_off\tlen\ttext\n");
 	}
 	for (size_t i = 0; i < count; i++) {
 		ut8 *bytes = NULL;
 		size_t len = 0;
-		ut32 data_off = meta->stringLiteralDataOffset + lits[i].dataIndex;
+		ut64 data_off = (ut64)meta->stringLiteralDataOffset + lits[i].dataIndex;
 		if (!r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
-			if (mode != 'j') {
-				r_cons_printf (core->cons, "%zu\t0x%x\t%u\t<invalid>\n", i, data_off, lits[i].length);
+			if (mode != 'j' && mode != '+') {
+				r_cons_printf (core->cons, "%zu\t0x%" PFMT64x "\t%u\t<invalid>\n", i, data_off, lits[i].length);
 			}
 			continue;
 		}
-		if (mode == 'j') {
+		if (mode == '+') {
+			char flag[64];
+			snprintf (flag, sizeof (flag), "str.unity.%zu", i);
+			ut64 addr = base + data_off;
+			r_flag_set (core->flags, flag, addr, len);
+			if (len && len <= INT_MAX) {
+				char *text = r_str_ndup ((const char *)bytes, (int)len);
+				if (text) {
+					r_meta_set_with_subtype (core->anal, R_META_TYPE_STRING,
+						R_STRING_ENC_UTF8, addr, len, text);
+					free (text);
+				}
+			}
+		} else if (mode == 'j') {
 			pj_o (pj);
 			pj_kn (pj, "idx", (ut64)i);
 			pj_kn (pj, "data_off", (ut64)data_off);
@@ -1067,7 +1134,7 @@ static int cmd_strings(RCore *core, char mode) {
 		} else {
 			char *text = r_str_ndup ((const char *)bytes, (int)len);
 			char *escaped = text? r_str_escape (text): NULL;
-			r_cons_printf (core->cons, "%zu\t0x%x\t%u\t\"%s\"\n", i, data_off, lits[i].length, escaped? escaped: "");
+			r_cons_printf (core->cons, "%zu\t0x%" PFMT64x "\t%u\t\"%s\"\n", i, data_off, lits[i].length, escaped? escaped: "");
 			free (escaped);
 			free (text);
 		}
