@@ -93,6 +93,7 @@ After installing the plugins, open a Unity binary in r2 and use:
 
 ```text
 r2unity?       show help
+r2unity-A      import classes and method flags (same as .r2unity-c*)
 r2unity-D      detect and cache companion file paths
 r2unity-L      open/select and map the IL2CPP native library
 r2unity-c[*j]  list classes, or emit an import script / JSON
@@ -106,10 +107,11 @@ r2unity-S      emit managed-assembly SBOM text summary
 r2unity-Sj     emit managed-assembly CycloneDX JSON
 ```
 
-Use `.r2unity-c*` to import classes and method flags. The script loads the
-native companion library automatically, so `s sym.unity.<class>.<method>`
-followed by `pd` shows the method's native code. Methods without a native
-implementation retain address zero and do not get a seekable flag.
+Use `r2unity-A` (equivalent to `.r2unity-c*`) to import classes and method
+flags. The script loads the native companion library automatically, so
+`s sym.unity.<class>.<method>` followed by `pd` shows the method's native code.
+Methods without a native implementation retain address zero and do not get
+a seekable flag.
 
 Set `r2unity.metadata` and `r2unity.library` manually when auto-detection is not
 enough. The `bin_r2unity` plugin also lets radare2/rabin2 treat

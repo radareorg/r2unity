@@ -13,6 +13,7 @@ static const char *g_help_msg[] = {
 	"Usage:", "r2unity[-subcmd]", " Unity IL2CPP analyzer",
 	"r2unity", "", "show this help",
 	"r2unity?", "", "show this help",
+	"r2unity-A", "", "import classes and method flags (same as .r2unity-c*)",
 	"r2unity-c", "[*j]", "enumerate classes, inheritance, methods, and fields",
 	"r2unity-D", "", "auto-detect companion files from current binary path",
 	"r2unity-L", "", "open/select and map the IL2CPP native library",
@@ -1305,6 +1306,8 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 	}
 
 	switch (sub) {
+	case 'A':
+		return r_core_cmd0 (core, ".r2unity-c*") == 0;
 	case 'c':
 		return cmd_classes (core, mode) == 0;
 	case 'D':
