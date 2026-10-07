@@ -52,7 +52,12 @@ test: $(EXEC) $(PLUGINS)
 install-plugin: $(PLUGINS)
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	mkdir -p "$(R2_USER_PLUGINS)"
-	cp -f $(PLUGINS) "$(R2_USER_PLUGINS)/"
+	# Replace the inode so macOS does not reuse a stale code-signature cache.
+	@for plugin in $(PLUGINS); do \
+		name=$${plugin##*/}; \
+		cp -f "$$plugin" "$(R2_USER_PLUGINS)/.$$name.tmp" && \
+		mv -f "$(R2_USER_PLUGINS)/.$$name.tmp" "$(R2_USER_PLUGINS)/$$name" || exit 1; \
+	done
 
 uninstall-plugin:
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
@@ -62,9 +67,10 @@ uninstall-plugin:
 fmt:
 	clang-format-radare2 src/**/*.c
 
-user-install: install-plugin
+user-install: $(EXEC) install-plugin
 	mkdir -p "$(R2PM_BINDIR)"
-	cp -f $(EXEC) "$(R2PM_BINDIR)"
+	cp -f $(EXEC) "$(R2PM_BINDIR)/.$(EXEC).tmp"
+	mv -f "$(R2PM_BINDIR)/.$(EXEC).tmp" "$(R2PM_BINDIR)/$(EXEC)"
 
 user-uninstall: uninstall-plugin
 	rm -f "$(R2PM_BINDIR)/$(EXEC)"

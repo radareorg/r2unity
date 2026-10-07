@@ -361,6 +361,7 @@ static int cmd_detect(RCore *core, bool as_json) {
 	}
 	R2UnityPaths *p = r2unity_detect_paths (bin);
 	if (!p) {
+		R_LOG_WARN ("could not find global-metadata.dat companion for %s", bin);
 		if (as_json) {
 			PJ *pj = pj_new ();
 			pj_o (pj);
@@ -369,8 +370,6 @@ static int cmd_detect(RCore *core, bool as_json) {
 			pj_end (pj);
 			r_cons_println (core->cons, pj_string (pj));
 			pj_free (pj);
-		} else {
-			R_LOG_ERROR ("could not detect Unity IL2CPP layout from %s", bin);
 		}
 		return 1;
 	}
@@ -379,6 +378,8 @@ static int cmd_detect(RCore *core, bool as_json) {
 	}
 	if (p->il2cpp_binary) {
 		r_config_set (core->config, "r2unity.library", p->il2cpp_binary);
+	} else {
+		R_LOG_WARN ("could not find IL2CPP native library companion for %s", bin);
 	}
 	if (as_json) {
 		PJ *pj = pj_new ();

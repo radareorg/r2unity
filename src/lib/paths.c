@@ -148,25 +148,33 @@ static bool try_ios(R2UnityPaths *p, const char *abs, const char *dir, const cha
 	 * Flat iOS layout:  Game.app/UnityFramework (older builds)
 	 * Extracted app root: Game/Data plus the main Mach-O beside Data
 	 * Metadata:         Game.app/Data/Managed/Metadata/global-metadata.dat
+	 *                   Game.app/Frameworks/UnityFramework.framework/Data/Managed/Metadata/global-metadata.dat
 	 *                   Game.app/Data/Raw/Managed/Metadata/global-metadata.dat (newer) */
 	char *app_dir = NULL;
 	if (r_str_endswith (dir, ".framework") && !r_str_casecmp (base, "UnityFramework")) {
 		char *frameworks = r_file_dirname (dir);
 		app_dir = r_file_dirname (frameworks);
 		free (frameworks);
-	} else if (r_str_endswith (dir, ".app")) {
-		app_dir = strdup (dir);
 	} else {
 		app_dir = strdup (dir);
 	}
-	char *metadata = find_ios_metadata (app_dir);
+	char *framework_dir = r_file_new (app_dir, "Frameworks", "UnityFramework.framework", NULL);
+	char *metadata = find_ios_metadata (framework_dir);
+	char *data_dir = metadata? r_file_new (framework_dir, "Data", NULL): NULL;
+	free (framework_dir);
+	if (!metadata) {
+		metadata = find_ios_metadata (app_dir);
+		if (metadata) {
+			data_dir = r_file_new (app_dir, "Data", NULL);
+		}
+	}
 	if (!metadata) {
 		free (app_dir);
 		return false;
 	}
 	p->platform = strdup ("ios");
 	p->metadata = metadata;
-	p->data_dir = r_file_new (app_dir, "Data", NULL);
+	p->data_dir = data_dir;
 	if (!r_str_casecmp (base, "UnityFramework")) {
 		p->il2cpp_binary = strdup (abs);
 	} else if (!take_if_exists (&p->il2cpp_binary,
@@ -314,6 +322,11 @@ static char *expand_app_bundle(const char *dir) {
  * Mach-O, whose basename is project-specific. */
 static char *expand_ios_root_dir(const char *dir) {
 	char *metadata = find_ios_metadata (dir);
+	if (!metadata) {
+		char *framework = r_file_new (dir, "Frameworks", "UnityFramework.framework", NULL);
+		metadata = find_ios_metadata (framework);
+		free (framework);
+	}
 	if (!metadata) {
 		return NULL;
 	}

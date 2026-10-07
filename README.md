@@ -130,7 +130,9 @@ references. `r2unity-AAAA` additionally runs `aaa` for deeper native analysis.
 These two levels take longer on large binaries.
 
 Set `r2unity.metadata` and `r2unity.library` manually when auto-detection is not
-enough. The `bin_r2unity` plugin also lets radare2/rabin2 treat
+enough. iOS detection checks both the app's `Data` directory and
+`Frameworks/UnityFramework.framework/Data` for managed metadata.
+The `bin_r2unity` plugin also lets radare2/rabin2 treat
 `global-metadata.dat` as a binary format, exposing sections, strings, symbols,
 classes, imports, libraries, and header fields. It also recognizes loose Unity
 SerializedFile v22 inputs such as `sharedassets*.assets`:
