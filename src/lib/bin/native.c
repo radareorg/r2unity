@@ -156,6 +156,7 @@ typedef struct {
 	R2UnityMetadata *meta;
 	Il2CppImageDefinition *images;
 	Il2CppTypeDefinition *types;
+	Il2CppMethodDefinition *methods;
 	size_t image_count;
 	size_t type_count;
 	size_t method_count;
@@ -166,13 +167,14 @@ static bool method_tables_init(R2UnityMethodTables *tables, R2UnityMetadata *met
 	tables->meta = meta;
 	tables->images = r2unity_get_images (meta, &tables->image_count);
 	tables->types = r2unity_get_type_definitions (meta, &tables->type_count);
-	tables->method_count = (size_t)r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
-	return tables->images && tables->image_count && tables->types && tables->type_count && tables->method_count;
+	tables->methods = r2unity_get_method_definitions (meta, &tables->method_count);
+	return tables->images && tables->image_count && tables->types && tables->type_count && tables->methods && tables->method_count;
 }
 
 static void method_tables_fini(R2UnityMethodTables *tables) {
 	R_FREE (tables->images);
 	R_FREE (tables->types);
+	R_FREE (tables->methods);
 }
 
 static int image_index_by_name(R2UnityMethodTables *tables, const char *module_name) {
@@ -215,23 +217,27 @@ static size_t copy_image_method_table(R2UnityNativeView *view, R2UnityMethodTabl
 	if (image->typeStart < 0) {
 		return 0;
 	}
-	size_t local = 0;
 	size_t copied = 0;
 	size_t start = (size_t)image->typeStart;
 	size_t end = R_MIN (tables->type_count, start + image->typeCount);
-	for (size_t ti = start; ti < end && local < table_count; ti++) {
+	for (size_t ti = start; ti < end; ti++) {
 		const Il2CppTypeDefinition *td = &tables->types[ti];
 		if (td->methodStart < 0) {
-			local += td->method_count;
 			continue;
 		}
-		for (size_t k = 0; k < td->method_count && local < table_count; k++, local++) {
+		for (size_t k = 0; k < td->method_count; k++) {
 			size_t mi = (size_t)td->methodStart + k;
 			if (mi >= tables->method_count) {
 				continue;
 			}
+			ut32 token = tables->methods[mi].token;
+			ut32 rid = token & 0x00ffffff;
+			if ((token >> 24) != 0x06 || !rid || rid > table_count) {
+				continue;
+			}
 			ut64 raw = 0;
-			if (!read_ptr_at (view, table_va + (ut64)local * view->ptr_size, &raw)) {
+			// CodeGenModule method pointers are indexed by the MethodDef token RID.
+			if (!read_ptr_at (view, table_va + (ut64)(rid - 1) * view->ptr_size, &raw)) {
 				continue;
 			}
 			ut64 addr = code_va_from_raw (view, raw);

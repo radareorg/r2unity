@@ -822,7 +822,7 @@ static void emit_class_r2(R2UnityMetadata *meta,
 		}
 		free (base);
 	}
-	printf ("ic+%s @ 0\n", r2klass);
+	printf ("'@0x0'ic+ %s\n", r2klass);
 
 	int mstart = td->methodStart;
 	for (int k = 0; methods && k < td->method_count && mstart >= 0 && (size_t)(mstart + k) < method_count; k++) {
@@ -833,7 +833,7 @@ static void emit_class_r2(R2UnityMetadata *meta,
 		}
 		char *mname = method_name_or_fallback (meta, &methods[mi], mi);
 		char *r2meth = r2_ic_name ("method", mname, mi);
-		printf ("ic+%s.%s @ 0x%" PFMT64x "\n", r2klass, r2meth, addr);
+		printf ("'@0x%" PFMT64x "'ic+ %s.%s\n", addr, r2klass, r2meth);
 		free (r2meth);
 		free (mname);
 	}

@@ -91,7 +91,7 @@ if build_plugins
     warning('r2 was not found; installing plugins under ' + r2_plugindir)
   endif
 
-  shared_library(
+  core_plugin = shared_library(
     'core_r2unity',
     files('src/r2/core_r2unity.c') + lib_sources,
     include_directories: lib_inc,
@@ -114,5 +114,12 @@ if build_plugins
     install: true,
     install_dir: r2_plugindir,
   )
+
+  python = find_program('python3', required: false)
+  if python.found()
+    test('r2unity-class-import', python,
+      args: [files('test/test_import.py'), core_plugin],
+    )
+  endif
 
 endif

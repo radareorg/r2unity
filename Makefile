@@ -46,6 +46,9 @@ all: $(EXEC)
 
 r2 plugin: $(PLUGINS)
 
+test: $(EXEC) $(PLUGINS)
+	python3 test/test_import.py
+
 install-plugin: $(PLUGINS)
 	@[ -n "$(R2_USER_PLUGINS)" ] || (echo "r2 not found; cannot resolve R2_USER_PLUGINS"; exit 1)
 	mkdir -p "$(R2_USER_PLUGINS)"
@@ -96,4 +99,4 @@ clean:
 	rm -f $(EXEC) $(OBJS) $(LEGACY_OBJS) $(PLUGINS) $(CONFIG_H)
 
 
-.PHONY: all clean plugin install-plugin uninstall-plugin fmt bindist
+.PHONY: all clean plugin install-plugin uninstall-plugin fmt bindist test
