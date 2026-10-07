@@ -1099,7 +1099,8 @@ static int cmd_strings(RCore *core, char mode) {
 		ut8 *bytes = NULL;
 		size_t len = 0;
 		ut64 data_off = (ut64)meta->stringLiteralDataOffset + lits[i].dataIndex;
-		if (!r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
+		if (lits[i].dataIndex > (ut64)meta->stringLiteralDataSize
+				|| !r2unity_read_string_literal (meta, &lits[i], &bytes, &len)) {
 			if (mode != 'j' && mode != '+') {
 				r_cons_printf (core->cons, "%zu\t0x%" PFMT64x "\t%u\t<invalid>\n", i, data_off, lits[i].length);
 			}
@@ -1203,7 +1204,48 @@ static void print_interop_wrapper_flag(RCore *core, const char *name, ut64 wrapp
 	}
 }
 
+static void apply_interop(RCore *core, const R2UnityInterop *it, bool reverse, ut64 addr) {
+	if (!addr || !it->name) {
+		return;
+	}
+	char *name = interop_flag_name (reverse? "sym.unity.reverse": "sym.unity.pinvoke", it);
+	if (!name) {
+		return;
+	}
+	if (!reverse) {
+		char *indexed = r_str_newf ("%s.%d", name, it->method_index);
+		free (name);
+		name = indexed;
+		if (!name) {
+			return;
+		}
+	}
+	r_flag_set (core->flags, name, addr, 1);
+	if (reverse && !r_anal_get_function_at (core->anal, addr)) {
+		r_anal_create_function (core->anal, name, addr, R_ANAL_FCN_TYPE_FCN, NULL);
+	}
+	char *comment = reverse
+		? r_str_newf ("ReversePInvoke %s [%s]", it->name, interop_kind_label (it->kind))
+		: it->dll_name
+			? r_str_newf ("PInvoke %s -> %s!%s", it->name, it->dll_name,
+				it->entry_name? it->entry_name: it->name)
+			: r_str_newf ("PInvoke %s -> <unresolved>", it->name);
+	const char *previous = r_meta_get_string (core->anal, R_META_TYPE_COMMENT, addr);
+	if (comment && (!previous || !strstr (previous, comment))) {
+		char *combined = previous? r_str_newf ("%s\n%s", previous, comment): strdup (comment);
+		if (combined) {
+			r_meta_set_string (core->anal, R_META_TYPE_COMMENT, addr, combined);
+			free (combined);
+		}
+	}
+	free (comment);
+	free (name);
+}
+
 static int cmd_interop(RCore *core, bool reverse, char mode) {
+	if (mode == '+' && cmd_load_library (core)) {
+		return 1;
+	}
 	RBuffer *buf = NULL;
 	R2UnityMetadata *meta = open_metadata (core, &buf);
 	if (!meta) {
@@ -1213,6 +1255,11 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 	R2UnityInterop *items = reverse
 		? r2unity_enumerate_reverse_pinvokes (meta, &n)
 		: r2unity_enumerate_pinvokes (meta, &n);
+	R2UnityNativeResult native_result = { 0 };
+	size_t method_count = r2unity_metadata_section_count (meta, R2U_SEC_METHODS);
+	if (!reverse && mode == '+' && n) {
+		find_method_pointers (core, meta, resolve_library_path (core), &native_result);
+	}
 	if (reverse) {
 		const char *lib = resolve_library_path (core);
 		if (lib) {
@@ -1265,6 +1312,13 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 				}
 			}
 			pj_end (pj);
+		} else if (mode == '+') {
+			ut64 addr = reverse? it->wrapper_va: 0;
+			if (!reverse && native_result.method_ptrs && it->method_index >= 0
+					&& (size_t)it->method_index < method_count) {
+				addr = native_result.method_ptrs[it->method_index];
+			}
+			apply_interop (core, it, reverse, addr);
 		} else if (mode == '*') {
 			if (it->name) {
 				const char *prefix = reverse? "sym.unity.reverse": "sym.unity";
@@ -1311,8 +1365,23 @@ static int cmd_interop(RCore *core, bool reverse, char mode) {
 		r_cons_printf (core->cons, "# summary: %s=%zu\n", reverse? "reverse_pinvokes": "pinvokes", n);
 	}
 	r2unity_free_interop (items, n);
+	r2unity_native_result_fini (&native_result);
 	close_metadata (meta, buf);
 	return 0;
+}
+
+static bool cmd_analyze(RCore *core, unsigned level) {
+	if (r_core_cmd0 (core, ".r2unity-c*") != 0) {
+		return false;
+	}
+	if (level >= 2 && (cmd_symbols (core, 0) || cmd_strings (core, '+')
+			|| cmd_interop (core, false, '+') || cmd_interop (core, true, '+'))) {
+		return false;
+	}
+	if (level >= 3 && r_core_cmd0 (core, "aar") != 0) {
+		return false;
+	}
+	return level < 4 || r_core_cmd0 (core, "aaa") == 0;
 }
 
 /* ---------- r2unity-S (SBOM) ---------- */
@@ -1354,16 +1423,21 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 	}
 	rest++;
 	/* "r2unity-" followed by the subcommand letter, optionally a modifier
-	 *('j' for JSON, '*' for r2 commands), optionally whitespace + args. */
+	 *('j' for JSON, '*' for r2 commands, '+' to import), or repeated 'A's. */
 	char sub = *rest;
 	char mode = 0;
+	unsigned level = 1;
 	if (sub) {
 		rest++;
-		if (*rest == 'j' || *rest == '*') {
+		while (sub == 'A' && *rest == 'A') {
+			level++;
+			rest++;
+		}
+		if (sub != 'A' && (*rest == 'j' || *rest == '*' || *rest == '+')) {
 			mode = *rest;
 			rest++;
 		}
-		if (*rest && *rest != ' ' && *rest != '\t') {
+		if (level > 4 || (*rest && *rest != ' ' && *rest != '\t')) {
 			r_cons_cmd_help (core->cons, g_help_msg);
 			return true;
 		}
@@ -1374,7 +1448,7 @@ static bool r2unity_call(RCorePluginSession *cps, const char *input) {
 
 	switch (sub) {
 	case 'A':
-		return r_core_cmd0 (core, ".r2unity-c*") == 0;
+		return cmd_analyze (core, level);
 	case 'c':
 		return cmd_classes (core, mode) == 0;
 	case 'D':

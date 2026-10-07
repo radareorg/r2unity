@@ -94,15 +94,18 @@ After installing the plugins, open a Unity binary in r2 and use:
 ```text
 r2unity?       show help
 r2unity-A      import classes and method flags (same as .r2unity-c*)
+r2unity-AA     also import method comments, strings, native tables and interop
+r2unity-AAA    also analyze native references (aar)
+r2unity-AAAA   also perform native analysis (aaa)
 r2unity-D      detect and cache companion file paths
 r2unity-L      open/select and map the IL2CPP native library
 r2unity-c[*j]  list classes, or emit an import script / JSON
 r2unity-i[j]   show metadata summary
 r2unity-s      apply managed method flags/comments
 r2unity-s*     print the r2 commands instead of applying them
-r2unity-z[j]   list managed string literals
-r2unity-P[*j]  list P/Invoke entries
-r2unity-R[*j]  list reverse-P/Invoke entries
+r2unity-z[+j]  list managed string literals (+ imports them)
+r2unity-P[+*j] list P/Invoke entries (+ imports flags and comments)
+r2unity-R[+*j] list reverse-P/Invoke entries (+ imports known wrappers)
 r2unity-S      emit managed-assembly SBOM text summary
 r2unity-Sj     emit managed-assembly CycloneDX JSON
 ```
@@ -112,6 +115,19 @@ flags. The script loads the native companion library automatically, so
 `s sym.unity.<class>.<method>` followed by `pd` shows the method's native code.
 Methods without a native implementation retain address zero and do not get
 a seekable flag.
+
+The analysis levels are cumulative. `r2unity-AA` adds method signatures and
+comments, native registration tables, managed strings, P/Invoke method flags
+and comments, and known reverse-P/Invoke wrappers. It maps `global-metadata.dat`
+read-only at an unused address range named `r2unity.metadata`. Seek to
+`str.unity.<index>` to read a literal's actual bytes; these addresses refer to
+the mapped metadata, rather than runtime managed string objects. You can also
+import strings or interop separately with `r2unity-z+`, `r2unity-P+`, and
+`r2unity-R+`.
+
+`r2unity-AAA` performs all of those imports and then runs `aar` to find native
+references. `r2unity-AAAA` additionally runs `aaa` for deeper native analysis.
+These two levels take longer on large binaries.
 
 Set `r2unity.metadata` and `r2unity.library` manually when auto-detection is not
 enough. The `bin_r2unity` plugin also lets radare2/rabin2 treat
