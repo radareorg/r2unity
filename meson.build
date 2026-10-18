@@ -115,8 +115,11 @@ if build_plugins
     install_dir: r2_plugindir,
   )
 
+  # test_import.py is not always present (it is not committed yet on every
+  # branch); only wire the test when the file exists
+  fs = import('fs')
   python = find_program('python3', required: false)
-  if python.found()
+  if python.found() and fs.exists('test' / 'test_import.py')
     test('r2unity-class-import', python,
       args: [files('test/test_import.py'), core_plugin],
     )
